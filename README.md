@@ -30,7 +30,7 @@ The web app lives in `docs/` and can still run as a static GitHub Pages site. St
 Open the hosted version:
 
 ```text
-https://akapppy.github.io/hockey_app/
+https://akapppy.github.io/Hockey_App/
 ```
 
 Build or refresh the static data from local cached MoneyPuck CSVs:
@@ -45,7 +45,7 @@ Download missing MoneyPuck simulation CSVs first, then rebuild:
 python3 -m hockey_app.tools.export_web --out docs --refresh
 ```
 
-The GitHub Pages workflow also runs this refresh/export hourly. GitHub Pages is static hosting, so a page view cannot itself update repository data; the scheduled workflow is the automatic update path.
+The GitHub Pages workflow also runs this refresh/export hourly, commits changed generated web files back to `main`, and then deploys the refreshed `docs/` artifact. GitHub Pages is static hosting, so a browser page view cannot itself update repository data; the scheduled/manual workflow is the automatic update path.
 
 Open `docs/index.html` directly, or serve the folder locally:
 
@@ -58,43 +58,6 @@ Then visit:
 ```text
 http://localhost:8000
 ```
-
-### Live Web Updates With a Backend
-
-For per-visitor refreshes, deploy the Python backend instead of relying on GitHub Pages alone:
-
-```bash
-uvicorn hockey_app.web_backend:app --host 0.0.0.0 --port 8000
-```
-
-Then visit:
-
-```text
-http://localhost:8000
-```
-
-When the page loads, `docs/app.js` calls `/api/data`. The backend uses `hockey_app.tools.export_web(..., refresh=True)`, so it reuses the same MoneyPuck simulation download/compile path and the desktop XML-backed refresh/export logic before returning the refreshed `data.json` payload.
-
-If the static GitHub Pages frontend should call a separately hosted backend, set `docs/config.js`:
-
-```js
-window.HOCKEY_APP_CONFIG = {
-  apiBase: "https://your-backend.example.com",
-  dataEndpoint: "",
-};
-```
-
-Backend environment variables:
-
-```text
-HOCKEY_WEB_DATA_DIR=/persistent/path/docs-data
-HOCKEY_CACHE_DIR=/persistent/path/cache
-HOCKEY_WEB_STATIC_DIR=docs
-HOCKEY_WEB_REFRESH_SECONDS=900
-HOCKEY_WEB_ALLOWED_ORIGINS=https://akapppy.github.io
-```
-
-`HOCKEY_WEB_DATA_DIR` and `HOCKEY_CACHE_DIR` should point at persistent storage in production. If the host has only ephemeral or read-only filesystems, the backend can serve the current bundled data but cannot truthfully persist refreshed files across restarts. In that case, keep using the scheduled GitHub Actions export or deploy the backend on a platform with a persistent volume.
 
 ### GitHub Pages
 

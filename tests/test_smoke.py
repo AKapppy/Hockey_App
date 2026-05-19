@@ -46,6 +46,23 @@ class ImportSmokeTests(unittest.TestCase):
         self.assertEqual(payload["tables"]["madeplayoffs"]["rows"]["BOS"], [0.9])
         self.assertEqual(payload["teams"][0]["code"], "BOS")
 
+    def test_web_export_copies_league_logo_assets_and_busts_data_cache(self) -> None:
+        exporter = importlib.import_module("hockey_app.tools.export_web")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "index.html").write_text(
+                '<script src="config.js"></script>\n<script src="data.js"></script>\n<script src="app.js"></script>\n',
+                encoding="utf-8",
+            )
+
+            exporter._copy_logo_assets(out)
+            version = exporter._write_data_version(out, "2026-05-19T12:34:56+00:00")
+
+            self.assertTrue((out / "assets" / "pwhl_logos" / "BOS.png").exists())
+            self.assertTrue((out / "assets" / "iihf_logos" / "USA.png").exists())
+            self.assertIn(version, (out / "index.html").read_text(encoding="utf-8"))
+            self.assertIn("data.js?v=", (out / "index.html").read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

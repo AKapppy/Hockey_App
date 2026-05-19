@@ -40,6 +40,13 @@
     ["VAN", "Vancouver"],
     ["SEA", "Seattle"],
   ];
+  const nhlLogoCodes = new Set([
+    "ANA", "BOS", "BUF", "CAR", "CBJ", "CGY", "CHI", "COL", "DAL", "DET", "EDM", "FLA",
+    "LAK", "MIN", "MTL", "NJD", "NSH", "NYI", "NYR", "OTT", "PHI", "PIT", "SEA", "SJS",
+    "STL", "TBL", "TOR", "UTA", "VAN", "VGK", "WPG", "WSH",
+  ]);
+  const iihfLogoCodes = new Set(["CAN", "CZE", "DEN", "FIN", "FRA", "GER", "ITA", "JPN", "LAT", "SUI", "SVK", "SWE", "USA"]);
+  const emptyLogo = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E";
   const webMainTabs = ["Scoreboard", "Stats", "Predictions", "Models"];
 
   const state = {
@@ -167,48 +174,8 @@
       hour: "numeric",
       minute: "2-digit",
     });
-    return `${stale ? "Stale data" : "Data"}: ${label}`;
-  }
-
-  function backendDataEndpoint() {
-    const config = window.HOCKEY_APP_CONFIG || {};
-    const explicit = config.dataEndpoint || window.HOCKEY_APP_DATA_ENDPOINT || "";
-    if (explicit) return String(explicit);
-    const apiBase = config.apiBase || window.HOCKEY_APP_API_BASE || "";
-    if (apiBase) return `${String(apiBase).replace(/\/$/, "")}/api/data`;
-    if (window.location.protocol === "http:" || window.location.protocol === "https:") {
-      return `${window.location.origin}/api/data`;
-    }
-    return "";
-  }
-
-  function clampStateToData() {
-    if (state.selectedTeam && !byCode.has(state.selectedTeam)) state.selectedTeam = null;
-    state.dateIdx = clampDate(state.dateIdx);
-    state.modelDateIdx = clampDesktopDate("points", state.modelDateIdx);
-    if (state.scoreboardDate && !scoreboardDays().includes(state.scoreboardDate)) {
-      state.scoreboardDate = null;
-    }
-  }
-
-  async function refreshDataFromBackend() {
-    const endpoint = backendDataEndpoint();
-    if (!endpoint) return;
-    try {
-      const response = await fetch(endpoint, { cache: "no-store" });
-      if (!response.ok) return;
-      const payload = await response.json();
-      if (payload && payload.update) {
-        console.info("Hockey app web data update:", payload.update);
-      }
-      if (payload && payload.data && payload.data.tables) {
-        hydrateData(payload.data);
-        clampStateToData();
-        render();
-      }
-    } catch (error) {
-      console.warn("Hockey app web data update failed; using bundled data.", error);
-    }
+    const endDate = data.metadata && data.metadata.endDate ? ` through ${prettyLongDate(data.metadata.endDate)}` : "";
+    return `${stale ? "Stale data" : "Last updated"}: ${label}${endDate}`;
   }
 
   function scoreboardDays() {
@@ -248,9 +215,30 @@
     return team ? team.name : code;
   }
 
-  function logo(code) {
-    const team = byCode.get(code);
-    return team ? team.logo : `assets/nhl_logos/${code}.png`;
+  function normalizedPwhlCode(code) {
+    const raw = String(code || "").toUpperCase().trim();
+    if (raw === "MON" || raw === "MTL") return "MON";
+    if (raw === "NYC") return "NY";
+    return raw;
+  }
+
+  function teamLogo({ league = "", code = "", abbreviation = "", countryCode = "" } = {}) {
+    const raw = String(code || abbreviation || countryCode || "").toUpperCase().trim();
+    if (!raw || raw === "TBD") return emptyLogo;
+    const leagueU = String(league || "").toUpperCase();
+    if (leagueU === "PWHL") return `assets/pwhl_logos/${normalizedPwhlCode(raw)}.png`;
+    if (leagueU === "IIHF" || leagueU.startsWith("OLYMPICS")) {
+      return iihfLogoCodes.has(raw) ? `assets/iihf_logos/${raw}.png` : emptyLogo;
+    }
+    const team = byCode.get(raw);
+    if (team && team.logo) return team.logo;
+    if (nhlLogoCodes.has(raw)) return `assets/nhl_logos/${raw}.png`;
+    if (iihfLogoCodes.has(raw)) return `assets/iihf_logos/${raw}.png`;
+    return emptyLogo;
+  }
+
+  function logo(code, opts = {}) {
+    return teamLogo({ ...opts, code });
   }
 
   function teamColor(code) {
@@ -651,13 +639,13 @@
       <article class="game-card">
         ${seriesScore ? `<div class="game-series-score is-away">Series ${esc(seriesScore[0])}</div><div class="game-series-score is-home">Series ${esc(seriesScore[1])}</div>` : ""}
         <div class="game-meta"><span>${esc(game.league || "NHL")}</span><span class="game-meta-status">${esc(status)}</span></div>
-        ${renderGameTeam(game.away, eliminationTeam, eliminatedTeam, "away")}
-        ${renderGameTeam(game.home, eliminationTeam, eliminatedTeam, "home")}
+        ${renderGameTeam(game.away, eliminationTeam, eliminatedTeam, "away", game.league)}
+        ${renderGameTeam(game.home, eliminationTeam, eliminatedTeam, "home", game.league)}
       </article>
     `;
   }
 
-  function renderGameTeam(team, eliminationTeam = "", eliminatedTeam = "", side = "") {
+  function renderGameTeam(team, eliminationTeam = "", eliminatedTeam = "", side = "", league = "") {
     const code = team.code || "";
     const score = team.score ?? "";
     const shots = scoreboardShotsLabel(team);
@@ -666,7 +654,7 @@
     return `
       <div class="game-team ${isEliminated ? "is-eliminated" : ""}" data-team="${esc(code)}">
         <span class="game-logo-wrap is-${esc(side)}">
-          <img src="${esc(logo(code))}" alt="">
+          <img src="${esc(logo(code, { league }))}" alt="">
           ${isFacingElimination ? `<span class="elimination-warning" aria-label="Facing elimination" title="Facing elimination">⚠️</span>` : ""}
         </span>
         <div class="game-team-main">
@@ -1386,16 +1374,26 @@
     if (!p) return renderComingSoon("Playoff Win Probabilities", "No exported points history data is available yet.");
     const pts = pointsSnapshot();
     const seriesScores = playoffSeriesScoresByDay(currentModelDay());
-    const pairs = [];
-    const teams = bracketTeams(pts);
-    for (let i = 0; i < teams.length; i += 2) if (teams[i] && teams[i + 1]) pairs.push([teams[i], teams[i + 1]]);
+    const westBracket = buildConferenceBracket(conferenceBracketTeams(pts, "Central", "Pacific", "WestWC"), pts, seriesScores);
+    const eastBracket = buildConferenceBracket(conferenceBracketTeams(pts, "Atlantic", "Metro", "EastWC"), pts, seriesScores);
+    const series = [
+      ...westBracket.round1.map((pair) => ["West Round 1", ...pair]),
+      ...eastBracket.round1.map((pair) => ["East Round 1", ...pair]),
+      ...westBracket.round2.map((pair) => ["West Round 2", ...pair]),
+      ...eastBracket.round2.map((pair) => ["East Round 2", ...pair]),
+      ["West Final", westBracket.final[0], westBracket.final[1]],
+      ["East Final", eastBracket.final[0], eastBracket.final[1]],
+      ["Stanley Cup Final", westBracket.champion, eastBracket.champion],
+    ].filter(([, a, b]) => a && b);
+    if (!series.length) return renderComingSoon("Playoff Win Probabilities", "No playoff matchups are available yet.");
     return `
       <div class="model-page page-fill">
+        ${renderModelStepper()}
         <div class="model-date">Playoff Win Probabilities - ${esc(modelDayLabel())}</div>
         <div class="table-scroll">
           <table class="tk-table wide-table">
-            <thead><tr><th>Series</th><th>Team</th><th>in 4</th><th>in 5</th><th>in 6</th><th>in 7</th><th>Prediction</th></tr></thead>
-            <tbody>${pairs.map(([a, b]) => renderSeriesRows(a, b, pts, seriesScores)).join("")}</tbody>
+            <thead><tr><th>Round</th><th>Series</th><th>Team</th><th>in 4</th><th>in 5</th><th>in 6</th><th>in 7</th><th>Prediction</th></tr></thead>
+            <tbody>${series.map(([round, a, b]) => renderSeriesRows(round, a, b, pts, seriesScores)).join("")}</tbody>
           </table>
         </div>
       </div>
@@ -1447,7 +1445,7 @@
     return out;
   }
 
-  function renderSeriesRows(a, b, pts, seriesScores) {
+  function renderSeriesRows(roundLabel, a, b, pts, seriesScores) {
     const pa = seriesProb(a, b, pts);
     const wins = seriesScores[[a, b].sort().join("|")] || {};
     const aWins = Number(wins[a] || 0);
@@ -1467,8 +1465,8 @@
       return `<td${styles}>${esc((v * 100).toFixed(2) + "%")}</td>`;
     }).join("");
     return `
-      <tr><td rowspan="2">${esc(a)} vs ${esc(b)}</td><td data-team="${esc(a)}">${esc(a)}</td>${cells(av)}<td rowspan="2">${esc(predText)}</td></tr>
-      <tr><td data-team="${esc(b)}">${esc(b)}</td>${cells(bv)}</tr>
+      <tr><td rowspan="2">${esc(roundLabel)}</td><td rowspan="2">${esc(a)} vs ${esc(b)}</td><td class="team-cell" data-team="${esc(a)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(logo(a, { league: "NHL" }))}" alt=""><span>${esc(a)}</span></div></td>${cells(av)}<td rowspan="2">${esc(predText)}</td></tr>
+      <tr><td class="team-cell" data-team="${esc(b)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(logo(b, { league: "NHL" }))}" alt=""><span>${esc(b)}</span></div></td>${cells(bv)}</tr>
     `;
   }
 
@@ -1805,7 +1803,7 @@
   function renderTeamMenu() {
     if (state.league === "PWHL") {
       return `<div class="team-menu-grid" style="grid-template-columns:repeat(2,max-content)">${pwhlTeams.map(([code, name]) => `
-        <div class="menu-item" data-team="${esc(code)}"><span>${esc(code)}</span><span>${esc(name)}</span></div>
+        <div class="menu-item" data-team="${esc(code)}"><img src="${esc(logo(code, { league: "PWHL" }))}" alt=""><span>${esc(code)}</span><span>${esc(name)}</span></div>
       `).join("")}</div>`;
     }
     return `<div class="team-menu-grid">${divisions.map((div) => `
@@ -1813,7 +1811,7 @@
         <div class="menu-title">${esc(div)}</div>
         ${data.teams.filter((t) => t.division === div).map((t) => `
           <div class="menu-item" data-team="${esc(t.code)}">
-            <img src="${esc(t.logo)}" alt=""><span>${esc(t.code)}</span>
+            <img src="${esc(logo(t.code, { league: "NHL" }))}" alt=""><span>${esc(t.code)}</span>
           </div>
         `).join("")}
       </div>
@@ -1961,5 +1959,4 @@
   app.addEventListener("click", onClick);
   window.addEventListener("resize", syncChromeLayout);
   render();
-  refreshDataFromBackend();
 }());
