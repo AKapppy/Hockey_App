@@ -1,6 +1,6 @@
 # Hockey App
 
-[Launch the web app](https://akapppy.github.io/hockey_app/)
+[Launch the web app](https://akapppy.github.io/Hockey_App/)
 
 Desktop hockey dashboard app (Tkinter) with:
 - Predictions (MoneyPuck simulation tables + charts)
