@@ -12,34 +12,26 @@ def base_dir() -> Path:
 
 def cache_dir() -> Path:
     """
-    Central runtime cache location, constrained to project-local paths only.
+    Central runtime cache location.
     Default:
       - <project>/cache
-    Optional overrides (only if they resolve inside <project>):
+    Optional overrides:
       - HOCKEY_CACHE_DIR
       - HOCKEY_BASE_DIR/cache
     """
     project = base_dir().resolve()
 
-    def _inside_project(p: Path) -> bool:
-        try:
-            return p.resolve().is_relative_to(project)
-        except Exception:
-            return False
-
     override = os.environ.get("HOCKEY_CACHE_DIR", "").strip()
     if override:
         p = Path(override).expanduser()
-        if _inside_project(p):
-            p.mkdir(parents=True, exist_ok=True)
-            return p
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
     base_override = os.environ.get("HOCKEY_BASE_DIR", "").strip()
     if base_override:
         p = Path(base_override).expanduser() / "cache"
-        if _inside_project(p):
-            p.mkdir(parents=True, exist_ok=True)
-            return p
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
     p = project / "cache"
     p.mkdir(parents=True, exist_ok=True)

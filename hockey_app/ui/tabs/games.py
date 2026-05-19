@@ -37,7 +37,16 @@ if TYPE_CHECKING:
     from hockey_app.ui.components.logo_bank import LogoBank
 else:
     class LogoBank(Protocol):
-        def get(self, code: str, *, height: int, dim: bool = False, dim_amt: float = 0.55) -> Any: ...
+        def get(
+            self,
+            code: str,
+            *,
+            height: int,
+            dim: bool = False,
+            dim_amt: float = 0.55,
+            normalize_area: bool = False,
+            target_area_factor: float = 0.95,
+        ) -> Any: ...
 
 
 # ---- look & feel ----
@@ -55,13 +64,6 @@ CARD_GAP_X = 22
 CARD_GAP_Y = 22
 FLAGS_DIR = Path(__file__).resolve().parents[2] / "assets" / "iihf_logos"
 PWHL_LOGOS_DIR = Path(__file__).resolve().parents[2] / "assets" / "pwhl_logos"
-
-# Visual balancing for marks with unusually wide/tall negative space.
-LOGO_VISUAL_SCALE: dict[str, float] = {
-    "PHI": 0.90,
-    "NSH": 1.12,
-    "WSH": 1.10,
-}
 
 _FLAG_IMG_CACHE: dict[tuple[str, int], Any] = {}
 _FLAG_AR_CACHE: dict[str, float] = {}
@@ -738,6 +740,18 @@ def _game_state(g: dict[str, Any]) -> str:
     return str(g.get("gameState") or g.get("gameStatus") or "").upper().strip()
 
 
+def _is_official_final_game(g: dict[str, Any]) -> bool:
+    state = _game_state(g)
+    if state in {"FINAL", "OFF"} or state.startswith("FINAL"):
+        return True
+    status_text = str(g.get("statusText") or "").upper().strip()
+    return "FINAL" in status_text
+
+
+def _is_zero_clock_text(value: str) -> bool:
+    return bool(re.fullmatch(r"\s*0*:00\s*", str(value or "")))
+
+
 def _scores(g: dict[str, Any]) -> tuple[int, int, str, str]:
     away = g.get("awayTeam") or {}
     home = g.get("homeTeam") or {}
@@ -940,7 +954,7 @@ def _promote_live_game_row_from_gamecenter(
     if isinstance(pbp, dict):
         snap = _pbp_live_snapshot(pbp)
         state = str(snap.get("gameState") or "").upper().strip()
-        if state:
+        if state and not _is_official_final_game(out):
             out["gameState"] = state
         period = _as_dict(snap.get("periodDescriptor"))
         if period and not _as_dict(out.get("periodDescriptor")):
@@ -1050,6 +1064,91 @@ def _final_status(g: dict[str, Any]) -> str:
     return "FINAL"
 
 
+def _is_regulation_lead_at_end(g: dict[str, Any]) -> bool:
+    away_score, home_score, _away_code, _home_code = _scores(g)
+    if away_score == home_score:
+        return False
+
+    pd = g.get("periodDescriptor") or {}
+    period_num = _to_int(
+        g.get("period")
+        or (pd.get("number") if isinstance(pd, dict) else None)
+        or 0,
+        default=0,
+    )
+    period_type = str((pd.get("periodType") if isinstance(pd, dict) else "") or "").upper().strip()
+    status_text = str(g.get("statusText") or "").strip()
+    parsed_status = _format_live_status_from_text(status_text) if status_text else None
+
+    if period_type in {"OT", "SO"}:
+        return False
+    if period_num != 3 and not (
+        parsed_status and parsed_status.upper().startswith("3RD INTERMISSION")
+    ):
+        return False
+
+    clock = g.get("clock") or {}
+    time_rem = str(clock.get("timeRemaining") or clock.get("time") or "").strip()
+    if bool(clock.get("inIntermission")) or _is_zero_clock_text(time_rem):
+        return True
+    status_u = status_text.upper()
+    return bool(
+        parsed_status and parsed_status.upper().startswith("3RD INTERMISSION")
+        or "END 3" in status_u
+        or "END OF 3" in status_u
+    )
+
+
+def _is_effectively_final_game(g: dict[str, Any]) -> bool:
+    return _is_official_final_game(g) or _is_regulation_lead_at_end(g)
+
+
+def _is_nhl_playoff_game(game: dict[str, Any]) -> bool:
+    if str((game or {}).get("league") or "NHL").upper() != "NHL":
+        return False
+    game_type = str(
+        (game or {}).get("gameType")
+        or (game or {}).get("gameTypeId")
+        or (game or {}).get("gameTypeCode")
+        or ""
+    ).upper()
+    gid = str((game or {}).get("id") or (game or {}).get("gameId") or "")
+    return game_type in {"3", "P", "PO", "PLAYOFFS"} or gid.startswith("202503")
+
+
+def _completed_playoff_series_winner(series_wins: dict[str, int]) -> str:
+    winners: list[str] = []
+    for code, wins in series_wins.items():
+        if int(wins or 0) >= 4:
+            winners.append(str(code or "").upper())
+    return winners[0] if len(winners) == 1 else ""
+
+
+def _is_unplayed_playoff_schedule_row(game: dict[str, Any]) -> bool:
+    if not _is_nhl_playoff_game(game):
+        return False
+    state = _game_state(game)
+    if state in {"LIVE", "CRIT"}:
+        return False
+    away_score, home_score, _away_code, _home_code = _scores(game)
+    return away_score == home_score
+
+
+def _should_hide_completed_playoff_series_game(
+    game: dict[str, Any],
+    series_wins: dict[tuple[str, str], dict[str, int]],
+) -> bool:
+    if not _is_unplayed_playoff_schedule_row(game):
+        return False
+    _away_score, _home_score, away_code, home_code = _scores(game)
+    away_code = str(away_code or "").upper()
+    home_code = str(home_code or "").upper()
+    if not away_code or not home_code:
+        return False
+    wins = series_wins.get(tuple(sorted((away_code, home_code)))) or {}
+    return bool(_completed_playoff_series_winner(wins))
+
+
 def _live_status(g: dict[str, Any]) -> str:
     clock = g.get("clock") or {}
     in_int = bool(clock.get("inIntermission"))
@@ -1061,13 +1160,10 @@ def _live_status(g: dict[str, Any]) -> str:
     stxt = str(g.get("statusText") or "").strip()
     parsed = _format_live_status_from_text(stxt) if stxt else None
 
-    def _is_zero_clock(t: str) -> bool:
-        m = re.match(r"^\s*0*(\d):(\d{2})\s*$", str(t or ""))
-        if not m:
-            return False
-        return int(m.group(1)) == 0 and int(m.group(2)) == 0
-
     # If upstream status explicitly says intermission, prefer it over clock.
+    away_score, home_score, _away_code, _home_code = _scores(g)
+    if ptype == "OT" and away_score == home_score and (in_int or (parsed and "INTERMISSION" in parsed)):
+        return "3RD INTERMISSION"
     if parsed and "INTERMISSION" in parsed:
         return parsed
 
@@ -1081,7 +1177,7 @@ def _live_status(g: dict[str, Any]) -> str:
     if isinstance(pnum, int):
         if in_int:
             return f"{_period_suffix(pnum)} INTERMISSION"
-        if _is_zero_clock(time_rem):
+        if _is_zero_clock_text(time_rem):
             return f"{_period_suffix(pnum)} INTERMISSION"
         if time_rem:
             return f"{_period_suffix(pnum)} - {time_rem}"
@@ -1120,7 +1216,46 @@ def _playoff_round_from_game(g: dict[str, Any]) -> Optional[int]:
                 return n
         except Exception:
             continue
+    gid = str((g or {}).get("id") or (g or {}).get("gameId") or "").strip()
+    # NHL playoff game ids are shaped like YYYY03RSG, where R is the
+    # playoff round, S is the series slot, and G is the game number.
+    # Some schedule/XML rows omit playoffRound, so infer it from the id.
+    if len(gid) >= 8 and gid[4:6] == "03" and gid[6:8].isdigit():
+        try:
+            n = int(gid[6:8])
+            if 1 <= n <= 4:
+                return n
+        except Exception:
+            pass
     return None
+
+
+def _playoff_series_wins_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    round_no: Optional[int] = None,
+) -> dict[tuple[str, str], dict[str, int]]:
+    out: dict[tuple[str, str], dict[str, int]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not _is_nhl_playoff_game(row):
+            continue
+        if round_no is not None and _playoff_round_from_game(row) != round_no:
+            continue
+        if not _is_effectively_final_game(row):
+            continue
+        away_score, home_score, away_code, home_code = _scores(row)
+        away_code = str(away_code or "").upper()
+        home_code = str(home_code or "").upper()
+        if not away_code or not home_code or away_score == home_score:
+            continue
+        key = tuple(sorted((away_code, home_code)))
+        if key not in out:
+            out[key] = {away_code: 0, home_code: 0}
+        out[key].setdefault(away_code, 0)
+        out[key].setdefault(home_code, 0)
+        winner = away_code if away_score > home_score else home_code
+        out[key][winner] = int(out[key].get(winner, 0)) + 1
+    return out
 
 
 def _round_label(round_no: int) -> str:
@@ -1948,6 +2083,18 @@ def _preserve_cached_game_rows(
     return _dedupe_games(current + cached)
 
 
+def _latest_final_game_day_from_rows(
+    rows_by_day: dict[dt.date, list[dict[str, Any]]],
+) -> Optional[dt.date]:
+    latest: Optional[dt.date] = None
+    for day, rows in rows_by_day.items():
+        if latest is not None and day <= latest:
+            continue
+        if any(isinstance(row, dict) and _is_effectively_final_game(row) for row in rows):
+            latest = day
+    return latest
+
+
 def _choose_cols(n: int, w: int, h: int) -> int:
     """
     Pick 1..5 columns to maximize card size while keeping a wide-card feel.
@@ -2242,7 +2389,15 @@ def _pwhl_logo_aspect_ratio(code: str, *, master: tk.Misc) -> float | None:
     return None
 
 
-def _logo_get(logos: Any, code: str, *, height: int, master: tk.Misc, league: str | None = None) -> Any:
+def _logo_get(
+    logos: Any,
+    code: str,
+    *,
+    height: int,
+    master: tk.Misc,
+    league: str | None = None,
+    dim: bool = False,
+) -> Any:
     """
     Compatibility: some LogoBank versions accept height=, some accept px=.
     """
@@ -2255,7 +2410,13 @@ def _logo_get(logos: Any, code: str, *, height: int, master: tk.Misc, league: st
     if logos is None:
         return _flag_get(code, height=height, master=master)
     try:
-        img = logos.get(code, height=height, dim=False)
+        img = logos.get(
+            code,
+            height=height,
+            dim=bool(dim),
+            dim_amt=0.30,
+            normalize_area=True,
+        )
         if img is not None:
             return img
     except TypeError:
@@ -2447,6 +2608,11 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
     if dmax is None:
         dmax = season_end
 
+    # If local season metadata was capped at today, keep the scoreboard
+    # navigable through the near-term NHL schedule window.
+    if season_start <= today and (today - season_start).days <= 330 and dmax <= today:
+        dmax = today + dt.timedelta(days=70)
+
     if dmin > dmax:
         dmin, dmax = dmax, dmin
 
@@ -2511,6 +2677,8 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
     game_moneypuck_live_force_try_s: dict[int, float] = {}
     game_win_probs_by_id: dict[int, tuple[float, float]] = {}
     game_win_prob_index_built = False
+    playoff_series_wins_cache: dict[tuple[dt.date, Optional[int]], dict[tuple[str, str], dict[str, int]]] = {}
+    playoff_elimination_cache: dict[tuple[dt.date, Optional[int]], dict[tuple[str, str], str]] = {}
     day_points_pct_cache: dict[dt.date, dict[str, float]] = {}
     day_standings_context_cache: dict[dt.date, dict[str, dict[str, Any]]] = {}
     day_standings_last_try_s: dict[dt.date, float] = {}
@@ -2629,6 +2797,120 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
                 write_games_day_xml(season=season, day=spill_day, games=merged)
             except Exception:
                 continue
+
+    def _playoff_series_wins_by_day(
+        selected_date: dt.date,
+        *,
+        round_no: Optional[int] = None,
+    ) -> dict[tuple[str, str], dict[str, int]]:
+        cache_key = (selected_date, round_no)
+        cached = playoff_series_wins_cache.get(cache_key)
+        if selected_date != today and isinstance(cached, dict):
+            return cached
+        start = getattr(boundaries, "playoffs_start", None) if boundaries is not None else None
+        if start is None:
+            regular_end = getattr(boundaries, "regular_end", None) if boundaries is not None else None
+            if isinstance(regular_end, dt.date):
+                start = regular_end + dt.timedelta(days=1)
+        if start is None:
+            start = max(season_start, selected_date - dt.timedelta(days=75))
+        if start > selected_date:
+            return {}
+
+        out: dict[tuple[str, str], dict[str, int]] = {}
+        probe = start
+        while probe <= selected_date:
+            try:
+                rows = read_games_day_xml(season=season, day=probe) if season else []
+            except Exception:
+                rows = []
+            day_wins = _playoff_series_wins_from_rows(
+                [row for row in rows if isinstance(row, dict)],
+                round_no=round_no,
+            )
+            for key, wins in day_wins.items():
+                if key not in out:
+                    out[key] = {}
+                for code, count in wins.items():
+                    out[key][code] = int(out[key].get(code, 0)) + int(count or 0)
+            probe += dt.timedelta(days=1)
+        if selected_date != today:
+            playoff_series_wins_cache[cache_key] = out
+        return out
+
+    def _playoff_elimination_teams_by_day(
+        selected_date: dt.date,
+        *,
+        round_no: Optional[int] = None,
+    ) -> dict[tuple[str, str], str]:
+        cache_key = (selected_date, round_no)
+        cached = playoff_elimination_cache.get(cache_key)
+        if selected_date != today and isinstance(cached, dict):
+            return cached
+        out: dict[tuple[str, str], str] = {}
+        for key, wins in _playoff_series_wins_by_day(selected_date, round_no=round_no).items():
+            if len(key) != 2:
+                continue
+            a, b = key
+            a_wins = int(wins.get(a, 0))
+            b_wins = int(wins.get(b, 0))
+            if a_wins == 3 and b_wins < 3:
+                out[key] = b
+            elif b_wins == 3 and a_wins < 3:
+                out[key] = a
+        if selected_date != today:
+            playoff_elimination_cache[cache_key] = out
+        return out
+
+    def _playoff_elimination_team_for_game(game: dict[str, Any], selected_date: dt.date) -> str:
+        if not _is_nhl_playoff_game(game):
+            return ""
+        away_code, home_code = _game_codes(game)
+        away_code = str(away_code or "").upper()
+        home_code = str(home_code or "").upper()
+        if not away_code or not home_code:
+            return ""
+        game_day = _game_date(game) or selected_date
+        series_state_day = game_day - dt.timedelta(days=1)
+        key = tuple(sorted((away_code, home_code)))
+        return str(
+            _playoff_elimination_teams_by_day(
+                series_state_day,
+                round_no=_playoff_round_from_game(game),
+            ).get(key) or ""
+        )
+
+    def _playoff_series_score_for_game(
+        game: dict[str, Any],
+        selected_date: dt.date,
+    ) -> Optional[tuple[int, int]]:
+        if not _is_nhl_playoff_game(game):
+            return None
+        away_code, home_code = _game_codes(game)
+        away_code = str(away_code or "").upper()
+        home_code = str(home_code or "").upper()
+        if not away_code or not home_code:
+            return None
+        key = tuple(sorted((away_code, home_code)))
+        wins = _playoff_series_wins_by_day(
+            selected_date,
+            round_no=_playoff_round_from_game(game),
+        ).get(key, {})
+        return int(wins.get(away_code, 0)), int(wins.get(home_code, 0))
+
+    def _playoff_eliminated_team_for_game(game: dict[str, Any], selected_date: dt.date) -> str:
+        elimination_team = _playoff_elimination_team_for_game(game, selected_date)
+        if not elimination_team or not _is_effectively_final_game(game):
+            return ""
+        away_score, home_score, away_code, home_code = _scores(game)
+        elim = str(elimination_team or "").upper()
+        away_code = str(away_code or "").upper()
+        home_code = str(home_code or "").upper()
+        if elim == away_code and away_score < home_score:
+            return away_code
+        if elim == home_code and home_score < away_score:
+            return home_code
+        return ""
 
     def _read_season_series_rows() -> list[dict[str, Any]]:
         nonlocal season_series_rows_cache
@@ -4132,8 +4414,9 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             refresh_after_id = None
 
     def _should_auto_refresh(d: dt.date) -> bool:
-        # Auto-refresh only when looking at today and the day is not finalized.
-        return auto_refresh_enabled and d == today and not _is_day_finalized(d)
+        # Today keeps an idle discovery tick; other selected dates refresh only
+        # while the rendered cache still contains an active game.
+        return auto_refresh_enabled and not _is_day_finalized(d) and (d == today or auto_refresh_has_active_games)
 
     def _auto_refresh_tick() -> None:
         nonlocal refresh_after_id
@@ -4779,52 +5062,64 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             and start_local > now_local + dt.timedelta(minutes=1)
         ):
             state = "FUT"
-        is_final_state = state in {"FINAL", "OFF"} or state.startswith("FINAL")
-
-        # Shared logo width target with small per-team visual balancing.
-        logo_w_target = int(min(max(100, w * 0.25), 176))
-        away_w = int(round(logo_w_target * LOGO_VISUAL_SCALE.get(away_code.upper(), 1.0)))
-        home_w = int(round(logo_w_target * LOGO_VISUAL_SCALE.get(home_code.upper(), 1.0)))
-        away_h = _logo_height_for_width(
-            logos,
-            away_code,
-            away_w,
-            min_h=26,
-            max_h=int(layout_h * 0.42),
-            league=league_name,
-            master=card.frame,
-        )
-        home_h = _logo_height_for_width(
-            logos,
-            home_code,
-            home_w,
-            min_h=26,
-            max_h=int(layout_h * 0.42),
-            league=league_name,
-            master=card.frame,
-        )
+        is_final_state = _is_effectively_final_game(game)
 
         xL = int(w * 0.30)
         xR = int(w * 0.70)
-        away_y = 0
-        home_y = 0
-
-        bleed = int(max(16, max(away_h, home_h) * 0.34))
-        panel_h = max(1, layout_h - bleed)
-        card.panel.place(x=0, y=bleed, width=w, height=panel_h)
-        card.overlay.place(x=0, y=0, width=w, height=h)
-        card.overlay.delete("all")
-        card.overlay.create_rectangle(0, 0, w, bleed, fill=BG, outline="")
-        card.overlay.create_rectangle(0, bleed, w, h, fill=CARD_BG, outline="")
-
-        away_img = _logo_get(logos, away_code, height=away_h, master=card.frame, league=league_name)
-        home_img = _logo_get(logos, home_code, height=home_h, master=card.frame, league=league_name)
+        elimination_team = _playoff_elimination_team_for_game(game, selected_date)
+        eliminated_team = _playoff_eliminated_team_for_game(game, selected_date)
+        away_eliminated = str(away_code or "").upper() == str(eliminated_team or "").upper()
+        home_eliminated = str(home_code or "").upper() == str(eliminated_team or "").upper()
+        logo_base_h = int(min(max(70, layout_h * 0.34), 124))
+        away_img = _logo_get(
+            logos,
+            away_code,
+            height=logo_base_h,
+            master=card.frame,
+            league=league_name,
+            dim=away_eliminated,
+        )
+        home_img = _logo_get(
+            logos,
+            home_code,
+            height=logo_base_h,
+            master=card.frame,
+            league=league_name,
+            dim=home_eliminated,
+        )
         card.img_refs.clear()
 
         if away_img:
             card.img_refs.append(away_img)
         if home_img:
             card.img_refs.append(home_img)
+
+        def _image_size(img: Any, fallback_w: int, fallback_h: int) -> tuple[int, int]:
+            try:
+                img_w = int(img.width())
+            except Exception:
+                img_w = int(fallback_w)
+            try:
+                img_h = int(img.height())
+            except Exception:
+                img_h = int(fallback_h)
+            return max(1, img_w), max(1, img_h)
+
+        away_img_w, away_h = _image_size(away_img, logo_base_h, logo_base_h) if away_img else (logo_base_h, logo_base_h)
+        home_img_w, home_h = _image_size(home_img, logo_base_h, logo_base_h) if home_img else (logo_base_h, logo_base_h)
+        max_logo_h = max(away_h, home_h)
+        logo_top_margin = max(4, int(layout_h * 0.018))
+        logo_center_y = int(round(logo_top_margin + (max_logo_h / 2.0)))
+        away_y = int(round(logo_center_y - (away_h / 2.0)))
+        home_y = int(round(logo_center_y - (home_h / 2.0)))
+
+        bleed = int(max(22, min(128, logo_top_margin + logo_base_h * 0.58)))
+        panel_h = max(1, layout_h - bleed)
+        card.panel.place(x=0, y=bleed, width=w, height=panel_h)
+        card.overlay.place(x=0, y=0, width=w, height=h)
+        card.overlay.delete("all")
+        card.overlay.create_rectangle(0, 0, w, bleed, fill=BG, outline="")
+        card.overlay.create_rectangle(0, bleed, w, h, fill=CARD_BG, outline="")
 
         if state in {"FUT", "PRE"}:
             away_txt = ""
@@ -5004,14 +5299,13 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
         # "@"
         at_size = max(18, min(42, int(max(away_h, home_h) * 0.50)))
         card.at_font.configure(size=at_size)
-        at_y_factor = 0.18
         card.overlay.create_text(
             w // 2,
-            int(max(away_h, home_h) * at_y_factor),
+            bleed,
             text="@",
             fill=MUTED,
             font=card.at_font,
-            anchor="n",
+            anchor="center",
         )
 
         # Fallback: show code only when logo/flag is missing.
@@ -5027,12 +5321,110 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             card.overlay.create_image(xL, away_y, image=away_img, anchor="n")
         if home_img:
             card.overlay.create_image(xR, home_y, image=home_img, anchor="n")
+        if elimination_team:
+            warning_font_size = max(14, min(24, int(max(away_h, home_h) * 0.18)))
+            warning_font = ("Helvetica", warning_font_size, "bold")
 
-        # Keep percentages/ribbons inside top card corners.
+            def _image_size(img: Any, fallback_w: int, fallback_h: int) -> tuple[int, int]:
+                try:
+                    img_w = int(img.width())
+                except Exception:
+                    img_w = int(fallback_w)
+                try:
+                    img_h = int(img.height())
+                except Exception:
+                    img_h = int(fallback_h)
+                return max(1, img_w), max(1, img_h)
+
+            def _draw_elimination_warning(
+                *,
+                code: str,
+                img: Any,
+                center_x: int,
+                top_y: int,
+                logo_w: int,
+                logo_h: int,
+                side: str,
+            ) -> None:
+                if str(code or "").upper() != str(elimination_team or "").upper():
+                    return
+                img_w, img_h = _image_size(img, logo_w, logo_h)
+                linespace = int(round(warning_font_size * 1.35))
+                half = max(7, linespace // 2)
+                buffer = max(4, int(img_h * 0.04))
+                if side == "away":
+                    icon_x = center_x + img_w // 2 + buffer + half
+                    icon_x = min(icon_x, w // 2 - max(22, half + 6))
+                else:
+                    icon_x = center_x - img_w // 2 - buffer - half
+                    icon_x = max(icon_x, w // 2 + max(22, half + 6))
+                icon_x = max(half + 3, min(w - half - 3, icon_x))
+                icon_y = top_y + img_h - max(2, half // 3)
+                icon_y = max(half + 2, min(layout_h - half - 2, icon_y))
+                card.overlay.create_text(
+                    icon_x,
+                    icon_y,
+                    text="⚠️",
+                    fill="#ffd76a",
+                    font=warning_font,
+                    anchor="center",
+                )
+
+            if away_img:
+                _draw_elimination_warning(
+                    code=away_code,
+                    img=away_img,
+                    center_x=xL,
+                    top_y=away_y,
+                    logo_w=away_img_w,
+                    logo_h=away_h,
+                    side="away",
+                )
+            if home_img:
+                _draw_elimination_warning(
+                    code=home_code,
+                    img=home_img,
+                    center_x=xR,
+                    top_y=home_y,
+                    logo_w=home_img_w,
+                    logo_h=home_h,
+                    side="home",
+                )
+
+        # Keep percentages/ribbons inside the gray card area.
         corner_pad_x = max(10, int(w * 0.024))
-        top_corner_y = int(max(12, min(layout_h - 20, max(away_h, home_h) * 0.46)))
+        card_inner_top = int(bleed + max(16, panel_h * 0.05))
+        card_inner_bottom = int(max(card_inner_top, layout_h - 10))
+        top_corner_y = int(min(card_inner_bottom, card_inner_top))
+        series_score = _playoff_series_score_for_game(game, selected_date)
+        series_linespace = 0
+        if series_score is not None:
+            series_size = max(18, min(30, int(max(away_h, home_h) * 0.26)))
+            series_font = tkfont.Font(root=card.frame, family="Helvetica", size=series_size, weight="bold")
+            series_linespace = int(series_font.metrics("linespace") or series_size)
+            y_series = max(4, int(min(layout_h - series_linespace - 4, h * 0.025)))
+            away_series_wins, home_series_wins = series_score
+            card.overlay.create_text(
+                corner_pad_x,
+                y_series,
+                text=str(away_series_wins),
+                fill=MUTED,
+                font=series_font,
+                anchor="nw",
+            )
+            card.overlay.create_text(
+                w - corner_pad_x,
+                y_series,
+                text=str(home_series_wins),
+                fill=MUTED,
+                font=series_font,
+                anchor="ne",
+            )
         y_division = top_corner_y
-        y_probs = int(max(18, min(layout_h - 10, max(away_h, home_h) * 0.66)))
+        y_probs = top_corner_y
+        if series_linespace:
+            y_division = min(card_inner_bottom, y_division + series_linespace)
+            y_probs = min(card_inner_bottom, y_probs + series_linespace)
         division_linespace = 0
         if away_standings_ribbon or home_standings_ribbon:
             ribbon_size = max(11, min(19, int(max(away_h, home_h) * 0.17)))
@@ -5061,9 +5453,9 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             prob_font = tkfont.Font(root=card.frame, family="Helvetica", size=prob_size, weight="normal")
             if division_linespace > 0:
                 corner_line_gap = max(4, int(max(away_h, home_h) * 0.025))
-                y_probs = int(min(layout_h - 10, y_division + division_linespace + corner_line_gap))
+                y_probs = int(min(card_inner_bottom, y_division + division_linespace + corner_line_gap))
             else:
-                y_probs = int(max(18, min(layout_h - 10, top_corner_y)))
+                y_probs = int(min(card_inner_bottom, max(card_inner_top, top_corner_y)))
             if away_future_pct:
                 card.overlay.create_text(
                     corner_pad_x,
@@ -5104,14 +5496,7 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
                 max_lines_n = max(1, left_lines_n, right_lines_n)
                 line_h = int(side_font.metrics("linespace") or 12)
                 box_h = max(36, int((line_h * max_lines_n) + 16))
-                need_h = int(top + box_h + 8)
-                if need_h > h:
-                    try:
-                        card.frame.place_configure(height=need_h)
-                        h = need_h
-                        card.overlay.place_configure(height=h)
-                    except Exception:
-                        pass
+                top = int(max(bleed + 4, min(top, h - box_h - 8)))
                 bottom = min(h - 8, top + box_h)
                 card.overlay.create_rectangle(8, top, w - 8, bottom, fill="#3f3f3f", outline="")
                 card.overlay.create_text(xL, top + 8, text=left_txt, fill=FG, font=side_font, anchor="n", justify="center")
@@ -5251,8 +5636,7 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
 
             allow_gamecenter_network = bool(selected_date == today)
             force_live_network = bool(_is_live_clock_running(game))
-            state_now = _game_state(game)
-            is_final_now = state_now in {"FINAL", "OFF"} or state_now.startswith("FINAL")
+            is_final_now = _is_effectively_final_game(game)
             boxscore = _load_boxscore(
                 gid,
                 allow_network=allow_gamecenter_network,
@@ -6880,6 +7264,78 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
                 out[gid] = row
         return out
 
+    def _cached_nhl_score_rows_for_day(day: dt.date) -> list[dict[str, Any]]:
+        final_key, live_key = _cache_keys_for_date(day)
+        payloads: list[dict[str, Any]] = []
+        try:
+            final_hit = nhl.cache.get_json(final_key, ttl_s=None)  # type: ignore[attr-defined]
+            if isinstance(final_hit, dict):
+                payloads.append(final_hit)
+            live_hit = nhl.cache.get_json(live_key, ttl_s=None)  # type: ignore[attr-defined]
+            if isinstance(live_hit, dict):
+                payloads.append(live_hit)
+        except Exception:
+            pass
+
+        rows: list[dict[str, Any]] = []
+        for payload in payloads:
+            for row in list(payload.get("games") or []):
+                if not isinstance(row, dict) or _is_olympic_game(row):
+                    continue
+                cur = dict(row)
+                cur["league"] = "NHL"
+                if not str(cur.get("_fetched_at") or "").strip():
+                    cur["_fetched_at"] = f"Updated: {_fmt_updated_ts()}"
+                rows.append(cur)
+        return _dedupe_games(rows)
+
+    def _reconcile_cached_nhl_score_games_to_xml(
+        *,
+        start: dt.date,
+        end: dt.date,
+    ) -> tuple[int, int]:
+        if not season or start > end:
+            return 0, 0
+        checked_days = 0
+        added_games = 0
+        day = start
+        while day <= end:
+            cached_rows = _cached_nhl_score_rows_for_day(day)
+            if cached_rows:
+                checked_days += 1
+                same_day, spillover = _split_games_for_selected_date(cached_rows, day)
+                _write_spillover_games_to_xml(spillover)
+                added_games += _write_nhl_games_xml_day(day, same_day)
+                day_payload_cache.pop(day, None)
+                day_payload_stamp.pop(day, None)
+                day_source_plan.pop(day, None)
+            day += dt.timedelta(days=1)
+        return checked_days, added_games
+
+    def _cached_final_game_rows_for_day(day: dt.date) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        rows.extend(_cached_nhl_score_rows_for_day(day))
+        try:
+            rows.extend(
+                row
+                for row in read_games_day_xml(season=season, day=day)
+                if isinstance(row, dict)
+                and str(row.get("league") or "NHL").upper() == "NHL"
+                and not _is_olympic_game(row)
+            )
+        except Exception:
+            pass
+        return _dedupe_games(rows)
+
+    def _latest_cached_final_game_day(*, up_to: dt.date) -> Optional[dt.date]:
+        day = min(up_to, dmax)
+        while day >= dmin:
+            latest = _latest_final_game_day_from_rows({day: _cached_final_game_rows_for_day(day)})
+            if latest is not None:
+                return latest
+            day -= dt.timedelta(days=1)
+        return None
+
     def _nhl_row_signature(row: dict[str, Any]) -> tuple[str, str, str, int, int, str]:
         away_code, home_code = _game_codes(row)
         away = _as_dict(row.get("awayTeam"))
@@ -6940,11 +7396,15 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
         center_date: dt.date,
         allow_network: bool,
         force_network: bool,
+        scan_start_override: Optional[dt.date] = None,
+        scan_end_override: Optional[dt.date] = None,
     ) -> tuple[int, int]:
         if not season:
             return 0, 0
-        scan_start = max(dmin, min(center_date, today) - dt.timedelta(days=14))
-        scan_end = min(dmax, max(center_date, today) + dt.timedelta(days=70))
+        scan_start = scan_start_override or (min(center_date, today) - dt.timedelta(days=14))
+        scan_end = scan_end_override or (max(center_date, today) + dt.timedelta(days=70))
+        scan_start = max(dmin, scan_start)
+        scan_end = min(dmax, scan_end)
         if scan_start > scan_end:
             return 0, 0
 
@@ -7025,7 +7485,7 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
         assume_started_if_unknown: bool = False,
     ) -> bool:
         st = _game_state(g)
-        if st in {"FINAL", "OFF"} or st.startswith("FINAL"):
+        if _is_effectively_final_game(g):
             return False
         start_local = _parse_start_local(g, tz)
         if start_local is not None:
@@ -7055,20 +7515,8 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
         elapsed_s: float | None = None,
         target_date: Optional[dt.date] = None,
     ) -> str:
-        counts: list[str] = []
-        if int(nhl_n) > 0:
-            counts.append(f"NHL {int(nhl_n)}")
-        if int(olympics_n) > 0:
-            counts.append(f"Olympics {int(olympics_n)}")
-        if int(pwhl_n) > 0:
-            counts.append(f"PWHL {int(pwhl_n)}")
-        head = f"{prefix} ({_fmt_short_date(target_date)}) {_fmt_updated_ts()}" if isinstance(target_date, dt.date) else f"{prefix} {_fmt_updated_ts()}"
-        chunks: list[str] = [head]
-        if counts:
-            chunks.append("  ".join(counts))
-        if elapsed_s is not None:
-            chunks.append(f"{max(0.0, float(elapsed_s)):.2f}s")
-        return "  |  ".join(chunks)
+        del prefix, nhl_n, olympics_n, pwhl_n, elapsed_s, target_date
+        return f"Updated: {_fmt_updated_ts()}"
 
     def _needs_live_refresh(
         games: list[dict[str, Any]],
@@ -7105,7 +7553,7 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
         def _all_final(games: list[dict[str, Any]]) -> bool:
             if not games:
                 return False
-            return all((_game_state(g) in {"FINAL", "OFF"} or _game_state(g).startswith("FINAL")) for g in games)
+            return all(_is_effectively_final_game(g) for g in games)
 
         if d == today:
             # Forced manual refresh should always bypass cache short-circuits.
@@ -7239,6 +7687,25 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             stamp = _stamp_from_cache()
             day_payload_stamp[d] = stamp
             return live_hit, None, stamp
+
+        if d > today:
+            sched_payload = _load_schedule_payload_for_date(
+                d,
+                allow_network=allow_network,
+                force_network=force_network,
+            )
+            if isinstance(sched_payload, dict):
+                sched_rows = [
+                    dict(row, league="NHL")
+                    for row in _extract_schedule_games(sched_payload)
+                    if isinstance(row, dict) and not _is_olympic_game(row)
+                ]
+                if sched_rows:
+                    raw_sched = {"games": _dedupe_games(sched_rows)}
+                    day_payload_cache[d] = raw_sched
+                    stamp = _stamp_from_cache()
+                    day_payload_stamp[d] = stamp
+                    return raw_sched, None, stamp
 
         # No cache entry:
         if allow_network and (d < today or force_network):
@@ -8388,6 +8855,12 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             for g in all_games:
                 if not str(g.get("_fetched_at") or "").strip():
                     g["_fetched_at"] = f"Updated: {_fmt_updated_ts()}"
+        completed_series_wins = _playoff_series_wins_by_day(d - dt.timedelta(days=1))
+        all_games = [
+            g
+            for g in all_games
+            if not _should_hide_completed_playoff_series_game(g, completed_series_wins)
+        ]
         if season:
             try:
                 write_games_day_xml(
@@ -8408,8 +8881,7 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             return f"{d.isoformat()}:{league}:{away_code}:{home_code}:{start_raw}"
 
         def _is_final_game_row(gg: dict[str, Any]) -> bool:
-            state = _game_state(gg)
-            return state in {"FINAL", "OFF"} or state.startswith("FINAL")
+            return _is_effectively_final_game(gg)
 
         final_transition_seen = False
         for gg in all_games:
@@ -8457,7 +8929,7 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             if _is_day_finalized(date_sel):
                 return
             all_final = all(
-                (_game_state(gg) in {"FINAL", "OFF"} or _game_state(gg).startswith("FINAL"))
+                _is_effectively_final_game(gg)
                 for gg in games_now
                 if isinstance(gg, dict)
             )
@@ -8564,7 +9036,7 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             pregame_goalie_watch = False
             if (not game_is_live) and d == today:
                 state = _game_state(gg)
-                is_final_state = state in {"FINAL", "OFF"} or state.startswith("FINAL")
+                is_final_state = _is_effectively_final_game(gg)
                 if (not is_final_state) and state in {"FUT", "PRE"}:
                     start_local = _parse_start_local(gg, tz)
                     if start_local is None:
@@ -8752,7 +9224,7 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             refresh_pwhl=True,
             refresh_moneypuck=True,
         )
-        checked_days, added_games = _backfill_missing_scheduled_games(
+        _backfill_missing_scheduled_games(
             center_date=d,
             allow_network=True,
             force_network=True,
@@ -8767,49 +9239,51 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             elapsed_s=(time.perf_counter() - t0),
             target_date=d,
         )
-        if checked_days > 0:
-            msg = f"{msg}  |  Schedule check {checked_days} day(s), added {added_games} game(s)"
         return msg
 
     def _startup_refresh_with_backfill(d: dt.date) -> str:
-        # Startup does a normal refresh for selected day, then walks backward
-        # to reconcile stale non-final days until it finds a fully final day.
-        first_msg = _force_refresh_for_date(d)
-        checked_days = 0
-        refreshed_days = 0
-        max_backfill_days = 21
-        cur = d - dt.timedelta(days=1)
+        up_to = min(today, dmax)
 
-        def _all_final(games: list[dict[str, Any]]) -> bool:
-            return bool(games) and all((_game_state(g) in {"FINAL", "OFF"} or _game_state(g).startswith("FINAL")) for g in games)
-
-        while cur >= dmin and checked_days < max_backfill_days:
-            checked_days += 1
-            raw, _msg, _stamp = _get_score_payload(cur, prefer_cached=True, allow_network=False)
-            games = [g for g in list(raw.get("games") or []) if isinstance(g, dict)]
-            if _all_final(games):
-                break
-
-            plan_nhl, plan_olympics, plan_pwhl = _planned_sources_for_date(cur)
-            _refresh_sources_for_date(
-                cur,
-                refresh_nhl=True if (plan_nhl or games) else False,
-                refresh_olympics=plan_olympics,
-                refresh_pwhl=plan_pwhl,
-            )
-            refreshed_days += 1
-            day_source_plan.pop(cur, None)
-
-            raw2, _msg2, _stamp2 = _get_score_payload(cur, prefer_cached=True, allow_network=False)
-            games2 = [g for g in list(raw2.get("games") or []) if isinstance(g, dict)]
-            if _all_final(games2):
-                break
-            cur -= dt.timedelta(days=1)
-
-        return (
-            f"{first_msg}  |  "
-            f"Backfill checked {checked_days} day(s), refreshed {refreshed_days} day(s)"
+        # First make the XML scoreboard include every NHL score payload already
+        # pinned or cached on disk. The render path preserves XML rows, so this
+        # prevents a partial startup source from shrinking the visible slate.
+        _reconcile_cached_nhl_score_games_to_xml(
+            start=dmin,
+            end=up_to,
         )
+
+        latest_final = _latest_cached_final_game_day(up_to=up_to)
+        playoff_start = getattr(boundaries, "playoffs_start", None) if boundaries is not None else None
+        if playoff_start is None and boundaries is not None:
+            regular_end = getattr(boundaries, "regular_end", None)
+            if isinstance(regular_end, dt.date):
+                playoff_start = regular_end + dt.timedelta(days=1)
+        schedule_start = max(
+            dmin,
+            playoff_start if isinstance(playoff_start, dt.date) else up_to - dt.timedelta(days=21),
+        )
+        if latest_final is not None:
+            schedule_start = min(schedule_start, latest_final)
+        _backfill_missing_scheduled_games(
+            center_date=d,
+            allow_network=True,
+            force_network=True,
+            scan_start_override=schedule_start,
+            scan_end_override=min(dmax, max(d, today) + dt.timedelta(days=70)),
+        )
+        latest_final = _latest_cached_final_game_day(up_to=up_to) or latest_final
+
+        refresh_start = latest_final if isinstance(latest_final, dt.date) else min(d, up_to)
+        refresh_start = max(dmin, min(refresh_start, up_to))
+        refreshed_days = 0
+        cur = refresh_start
+        while cur <= up_to:
+            _selective_refresh_for_date(cur, manual_trigger=False)
+            day_source_plan.pop(cur, None)
+            refreshed_days += 1
+            cur += dt.timedelta(days=1)
+
+        return f"Updated: {_fmt_updated_ts()}"
 
     def _run_refresh_async(d: dt.date, *, force_manual: bool, reason: str, startup_backfill: bool = False) -> None:
         nonlocal refresh_inflight
@@ -8818,7 +9292,7 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             return
         _cancel_refresh()
         refresh_inflight = True
-        refresh_status_var.set(f"{reason}...")
+        refresh_status_var.set("Refreshing...")
 
         def _worker() -> None:
             msg = ""
@@ -8839,9 +9313,14 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
                 refresh_inflight = False
                 refresh_status_var.set(msg)
                 final_transition_seen = _render_day(force_rebuild=False)
-                if final_transition_seen and callable(on_data_refresh):
+                if callable(on_data_refresh):
+                    event = {
+                        "reason": "game_final" if final_transition_seen else "scoreboard_refresh",
+                        "final_transition": bool(final_transition_seen),
+                        "refresh_reason": reason,
+                    }
                     try:
-                        on_data_refresh({"reason": "game_final"})
+                        on_data_refresh(event)
                     except Exception:
                         try:
                             on_data_refresh()

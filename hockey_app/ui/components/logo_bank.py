@@ -36,6 +36,61 @@ def _apply_dim_rgba(img: RawImg, dim_amt: float) -> RawImg:
         return img
 
 
+def _visible_area_height_scale(
+    area_factor: float,
+    aspect_ratio: float | None = None,
+    *,
+    target_area_factor: float = 0.95,
+    min_scale: float = 0.72,
+    max_scale: float = 1.18,
+) -> float:
+    del aspect_ratio
+    area_factor = max(0.001, float(area_factor))
+    target = max(0.001, float(target_area_factor))
+    scale = math.sqrt(target / area_factor)
+    return max(float(min_scale), min(float(max_scale), scale))
+
+
+def _geometric_area_factor_rgba(
+    img: RawImg,
+    *,
+    alpha_threshold: int = 8,
+) -> float | None:
+    if not PIL_OK:
+        return None
+    try:
+        w, h = img.size
+        if w <= 0 or h <= 0:
+            return None
+        threshold = max(0, min(254, int(alpha_threshold)))
+        alpha = img.getchannel("A")
+        mask = alpha.point(lambda px: 255 if int(px) > threshold else 0)
+        bbox = mask.getbbox()
+        if bbox is None:
+            return None
+        left, top, right, bottom = bbox
+        footprint_w = max(1, int(right) - int(left))
+        footprint_h = max(1, int(bottom) - int(top))
+        return float(footprint_w * footprint_h) / float(h * h)
+    except Exception:
+        return None
+
+
+def _crop_transparent_padding_rgba(img: RawImg, *, alpha_threshold: int = 8) -> RawImg:
+    if not PIL_OK:
+        return img
+    try:
+        threshold = max(0, min(254, int(alpha_threshold)))
+        alpha = img.getchannel("A")
+        mask = alpha.point(lambda px: 255 if int(px) > threshold else 0)
+        bbox = mask.getbbox()
+        if bbox is None:
+            return img
+        return img.crop(bbox)
+    except Exception:
+        return img
+
+
 class LogoBank:
     """
     Loads original PNGs once and returns resized Tk images on demand.
@@ -59,8 +114,9 @@ class LogoBank:
         self._logo_path = logo_path
 
         self._raw: dict[str, RawImg] = {}
-        self._tk_cache: dict[tuple[str, int, bool, int], TkImg] = {}
+        self._tk_cache: dict[tuple[str, int, bool, int, bool, int], TkImg] = {}
         self._ar_cache: dict[str, float] = {}
+        self._geometric_area_cache: dict[str, float] = {}
 
     def _load_code_if_needed(self, code: str) -> bool:
         code = self._canon_team_code(code)
@@ -73,6 +129,7 @@ class LogoBank:
         if PIL_OK:
             try:
                 img = Image.open(str(p)).convert("RGBA")  # type: ignore
+                img = _crop_transparent_padding_rgba(img)
                 self._raw[code] = img
                 return True
             except Exception:
@@ -115,11 +172,58 @@ class LogoBank:
         except Exception:
             return None
 
-    def get(self, code: str, height: int, dim: bool = False, dim_amt: float = 0.55) -> TkImg | None:
+    def geometric_area_factor(self, code: str) -> float | None:
         code = self._canon_team_code(code)
+        if code in self._geometric_area_cache:
+            return self._geometric_area_cache[code]
+        if not PIL_OK:
+            return None
+        if not self._load_code_if_needed(code):
+            return None
+        raw = self._raw.get(code)
+        if raw is None:
+            return None
+        area_factor = _geometric_area_factor_rgba(raw)
+        if area_factor is not None:
+            self._geometric_area_cache[code] = area_factor
+            return area_factor
+        return None
+
+    def normalized_height(
+        self,
+        code: str,
+        height: int,
+        *,
+        target_area_factor: float = 0.95,
+    ) -> int:
         h = int(max(1, height))
+        area_factor = self.geometric_area_factor(code)
+        if area_factor is None:
+            return h
+        scale = _visible_area_height_scale(
+            area_factor,
+            target_area_factor=target_area_factor,
+        )
+        return int(max(1, round(float(h) * scale)))
+
+    def get(
+        self,
+        code: str,
+        height: int,
+        dim: bool = False,
+        dim_amt: float = 0.55,
+        normalize_area: bool = False,
+        target_area_factor: float = 0.95,
+    ) -> TkImg | None:
+        code = self._canon_team_code(code)
+        h = (
+            self.normalized_height(code, height, target_area_factor=target_area_factor)
+            if normalize_area
+            else int(max(1, height))
+        )
         dim_key = int(round(float(dim_amt) * 100))
-        key = (code, h, bool(dim), dim_key)
+        target_key = int(round(float(target_area_factor) * 100))
+        key = (code, h, bool(dim), dim_key, bool(normalize_area), target_key)
         if key in self._tk_cache:
             return self._tk_cache[key]
 

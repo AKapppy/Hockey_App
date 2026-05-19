@@ -133,7 +133,7 @@ def _bracket_snapshot(
             pts,
             standings,
             conference="West",
-            layout_divisions=("Pacific", "Central"),
+            layout_divisions=("Central", "Pacific"),
         ),
         "East_R1": _conference_bracket_slots(
             pts,
@@ -280,6 +280,56 @@ def _series_score_snapshot(day: dt.date, *, league: str) -> dict[tuple[str, str]
             bucket.setdefault(home, 0)
             bucket[winner] = int(bucket.get(winner, 0)) + 1
     return out
+
+
+def _playoff_round_from_xml_game(game: ET.Element) -> int | None:
+    for raw in (game.get("playoff_round"), game.get("round")):
+        n = _to_int(raw, 0)
+        if 1 <= n <= 4:
+            return n
+    gid = str(game.get("id") or "").strip()
+    if len(gid) >= 8 and gid[4:6] == "03" and gid[6:8].isdigit():
+        n = _to_int(gid[6:8], 0)
+        if 1 <= n <= 4:
+            return n
+    return None
+
+
+def _playoff_rounds_started_from_xml_root(root: ET.Element, day: dt.date) -> set[int]:
+    out: set[int] = set()
+    for day_node in root.findall("day"):
+        raw_day = str(day_node.get("date") or "").strip()
+        try:
+            game_day = dt.date.fromisoformat(raw_day[:10])
+        except Exception:
+            continue
+        if game_day > day:
+            continue
+        for game in day_node.findall("game"):
+            if str(game.get("league") or "").upper() != "NHL":
+                continue
+            gid = str(game.get("id") or "").strip()
+            game_type = str(game.get("game_type") or game.get("game_type_id") or game.get("game_type_code") or "").strip()
+            is_playoff = game_type in {"3", "P"} or gid.startswith("202503")
+            if not is_playoff:
+                continue
+            round_no = _playoff_round_from_xml_game(game)
+            if round_no is not None:
+                out.add(round_no)
+    return out
+
+
+def _playoff_rounds_started_snapshot(day: dt.date, *, league: str) -> set[int]:
+    if str(league or "").upper() != "NHL":
+        return set()
+    path = cache_dir() / "online" / "xml" / str(SEASON) / "games.xml"
+    if not path.exists():
+        return set()
+    try:
+        root = ET.parse(path).getroot()
+    except Exception:
+        return set()
+    return _playoff_rounds_started_from_xml_root(root, day)
 
 
 def playoff_status_map(
@@ -506,7 +556,7 @@ def populate_playoff_picture_tab(
 
         for i in range(3):
             y = y0 + i * row_h
-            for j, div in enumerate(("Pacific", "Central", "Atlantic", "Metro")):
+            for j, div in enumerate(("Central", "Pacific", "Atlantic", "Metro")):
                 code = cols[div][i] if i < len(cols[div]) else ""
                 draw_code_cell(x0 + j * cw, y, code, w=cw, h=row_h, state_hint=states.get(code, ""), logos_only=False)
                 if code:
@@ -540,6 +590,7 @@ def populate_playoff_picture_tab(
         pts: dict[str, float],
         states: dict[str, str],
         series_scores: dict[tuple[str, str], dict[str, int]],
+        started_rounds: set[int],
         team_strength: dict[str, float],
         live_series_probs: dict[tuple[str, str], dict[str, Any]],
     ) -> tuple[int, int, str]:
@@ -575,7 +626,7 @@ def populate_playoff_picture_tab(
         # segment is visible beside the logo.
         x_r0 = x0 - (12 if align == "right" else -12)
 
-        def _draw_series_number(code: str, opp: str, y_center: float) -> None:
+        def _draw_series_number(code: str, opp: str, y_center: float, box_x: float) -> None:
             if not code or not opp:
                 return
             wins = series_scores.get(series_key(code, opp), {})
@@ -583,10 +634,10 @@ def populate_playoff_picture_tab(
             opp_wins = int(wins.get(opp, 0))
             color = "#7fdc7f" if code_wins > opp_wins else "#ff7b7b" if code_wins < opp_wins else "#f0f0f0"
             if align == "right":
-                x = x_r0 + col_w + 8
+                x = box_x + col_w + 8
                 anchor = "w"
             else:
-                x = x_r0 - 8
+                x = box_x - 8
                 anchor = "e"
             canvas.create_text(
                 x,
@@ -607,8 +658,9 @@ def populate_playoff_picture_tab(
             draw_code_cell(x_r0, y + row_h + intra_pair_gap, b, w=col_w, h=row_h, logos_only=True, state_hint=states.get(b, ""))
             yc_a = y + row_h / 2
             yc_b = y + row_h + intra_pair_gap + row_h / 2
-            _draw_series_number(a, b, yc_a)
-            _draw_series_number(b, a, yc_b)
+            if 1 in started_rounds:
+                _draw_series_number(a, b, yc_a, x_r0)
+                _draw_series_number(b, a, yc_b, x_r0)
             pair_centers.append((yc_a, yc_b))
             mids.append((yc_a + yc_b) / 2)
 
@@ -633,6 +685,12 @@ def populate_playoff_picture_tab(
                 logos_only=True,
                 state_hint=states.get(code, ""),
             )
+        for i in range(2):
+            a = r1_codes[i * 2] if i * 2 < len(r1_codes) else ""
+            b = r1_codes[i * 2 + 1] if i * 2 + 1 < len(r1_codes) else ""
+            if 2 in started_rounds and a and b:
+                _draw_series_number(a, b, mids[i * 2], x_r1)
+                _draw_series_number(b, a, mids[i * 2 + 1], x_r1)
 
         team_edge = x_r0 + col_w / 2
         r1_center_x = x_r1 + col_w / 2
@@ -661,6 +719,9 @@ def populate_playoff_picture_tab(
                 logos_only=True,
                 state_hint=states.get(code, ""),
             )
+        if 3 in started_rounds and r2_codes[0] and r2_codes[1]:
+            _draw_series_number(r2_codes[0], r2_codes[1], mids2[0], x_r2)
+            _draw_series_number(r2_codes[1], r2_codes[0], mids2[1], x_r2)
 
         r1_center_x = x_r1 + col_w / 2
         r2_center_x = x_r2 + col_w / 2
@@ -701,6 +762,7 @@ def populate_playoff_picture_tab(
         y0: int,
         states: dict[str, str],
         series_scores: dict[tuple[str, str], dict[str, int]],
+        started_rounds: set[int],
         standings: dict[str, dict[str, Any]] | None,
         team_strength: dict[str, float],
         live_series_probs: dict[tuple[str, str], dict[str, Any]],
@@ -725,6 +787,7 @@ def populate_playoff_picture_tab(
             pts=pts,
             states=states,
             series_scores=series_scores,
+            started_rounds=started_rounds,
             team_strength=team_strength,
             live_series_probs=live_series_probs,
         )
@@ -736,6 +799,7 @@ def populate_playoff_picture_tab(
             pts=pts,
             states=states,
             series_scores=series_scores,
+            started_rounds=started_rounds,
             team_strength=team_strength,
             live_series_probs=live_series_probs,
         )
@@ -805,12 +869,23 @@ def populate_playoff_picture_tab(
 
         data_y = top_y + 46
         series_scores = _series_score_snapshot(day, league=league_u)
+        started_rounds = _playoff_rounds_started_snapshot(day, league=league_u)
         status = playoff_status_map(day, pts, standings, league=league_u, series_scores=series_scores)
         team_strength = team_strength_snapshot(day, league=league_u)
         live_series_probs = live_playoff_series_probabilities(day, season_text=SEASON, league=league_u)
         p_end = draw_presidents(pts, league_x, data_y, status, standings)
         w_end = draw_wildcard(pts, wc_x, data_y, status, standings)
-        b_end = draw_bracket(pts, bracket_left, 62, status, series_scores, standings, team_strength, live_series_probs)
+        b_end = draw_bracket(
+            pts,
+            bracket_left,
+            62,
+            status,
+            series_scores,
+            started_rounds,
+            standings,
+            team_strength,
+            live_series_probs,
+        )
         bottom = max(p_end, w_end, b_end) + 24
         canvas.configure(scrollregion=(0, 0, max(1700, bracket_right + 2), max(980, bottom)))
 

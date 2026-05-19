@@ -341,7 +341,7 @@ def populate_playoff_win_probabilities_tab(
         pass
 
     def redraw() -> None:
-        return
+        populate_playoff_win_probabilities_tab(parent, logo_bank=logo_bank, league=league)
 
     def reset() -> None:
         try:

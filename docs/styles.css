@@ -73,6 +73,13 @@ select {
 
 .global-right {
   margin-left: auto;
+  align-items: center;
+}
+
+.data-stamp {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .tk-button {
@@ -251,6 +258,24 @@ select {
   margin: 0 auto;
   display: grid;
   align-content: start;
+  position: relative;
+}
+
+.game-series-score {
+  position: absolute;
+  top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.game-series-score.is-away {
+  left: 12px;
+}
+
+.game-series-score.is-home {
+  right: 12px;
 }
 
 .game-meta,
@@ -273,7 +298,7 @@ select {
 }
 
 .game-team {
-  grid-template-columns: 30px 1fr auto;
+  grid-template-columns: 38px 1fr auto;
   min-height: 40px;
   border-top: 1px solid var(--grid);
 }
@@ -291,10 +316,35 @@ select {
   font-size: 12px;
 }
 
-.game-team img {
+.game-logo-wrap {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  overflow: visible;
+}
+
+.game-logo-wrap img {
   max-width: 26px;
   max-height: 26px;
   object-fit: contain;
+}
+
+.game-team.is-eliminated .game-logo-wrap img {
+  opacity: 0.30;
+  filter: grayscale(1);
+}
+
+.elimination-warning {
+  position: absolute;
+  left: 31px;
+  bottom: -2px;
+  font-size: 12px;
+  line-height: 1;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85));
+  z-index: 1;
 }
 
 .phase-row {
@@ -555,7 +605,7 @@ select {
 
 .bracket-team-line.is-empty {
   min-height: 36px;
-  opacity: 0.35;
+  opacity: 0.30;
 }
 
 .bracket-team-line.is-predicted {

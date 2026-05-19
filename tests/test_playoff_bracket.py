@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import datetime as dt
 import unittest
+import xml.etree.ElementTree as ET
 
 from hockey_app.ui.tabs.models_playoff_math import series_probability_table
 from hockey_app.ui.renderers.pie_chart import _playoff_matchup_ring_order
-from hockey_app.ui.tabs.models_playoff_picture import _bracket_snapshot, _pick_bracket_winner, playoff_status_map
+from hockey_app.ui.tabs.models_playoff_picture import (
+    _bracket_snapshot,
+    _pick_bracket_winner,
+    _playoff_rounds_started_from_xml_root,
+    playoff_status_map,
+)
 from hockey_app.ui.tabs.points import _is_nhl_regular_season_game
 from hockey_app.ui.tabs.models_playoff_win_probabilities import _best_of_7_lengths_from_score
 
@@ -57,7 +63,7 @@ class PlayoffBracketSnapshotTests(unittest.TestCase):
         bracket = _bracket_snapshot(pts, standings)
 
         self.assertEqual(bracket["East_R1"], ["BUF", "BOS", "TBL", "MTL", "CAR", "OTT", "PIT", "PHI"])
-        self.assertEqual(bracket["West_R1"], ["VGK", "UTA", "EDM", "ANA", "COL", "LAK", "DAL", "MIN"])
+        self.assertEqual(bracket["West_R1"], ["COL", "LAK", "DAL", "MIN", "VGK", "UTA", "EDM", "ANA"])
 
     def test_points_fallback_still_assigns_lower_wildcard_to_better_winner(self) -> None:
         pts = {
@@ -73,18 +79,18 @@ class PlayoffBracketSnapshotTests(unittest.TestCase):
 
         bracket = _bracket_snapshot(pts, standings=None)
 
-        self.assertEqual(bracket["West_R1"], ["VGK", "MIN", "EDM", "ANA", "COL", "LAK", "DAL", "UTA"])
+        self.assertEqual(bracket["West_R1"], ["COL", "LAK", "DAL", "UTA", "VGK", "MIN", "EDM", "ANA"])
 
     def test_playoff_matchup_ring_order_keeps_series_neighbors_together(self) -> None:
         field = [
-            "VGK",
-            "MIN",
-            "EDM",
-            "ANA",
             "COL",
             "LAK",
             "DAL",
+            "MIN",
+            "VGK",
             "UTA",
+            "EDM",
+            "ANA",
             "BUF",
             "BOS",
             "TBL",
@@ -99,7 +105,7 @@ class PlayoffBracketSnapshotTests(unittest.TestCase):
 
         self.assertEqual(
             ordered,
-            ["CAR", "OTT", "PIT", "PHI", "BUF", "BOS", "TBL", "MTL", "COL", "LAK", "DAL", "UTA", "VGK", "MIN", "EDM", "ANA"],
+            ["CAR", "OTT", "PIT", "PHI", "MTL", "TBL", "BOS", "BUF", "VGK", "UTA", "EDM", "ANA", "MIN", "DAL", "LAK", "COL"],
         )
 
     def test_finished_series_overrides_points_projection(self) -> None:
@@ -128,6 +134,26 @@ class PlayoffBracketSnapshotTests(unittest.TestCase):
         )
 
         self.assertEqual(statuses.get("OTT"), "eliminated")
+
+    def test_round_started_snapshot_excludes_future_rounds(self) -> None:
+        root = ET.fromstring(
+            """
+            <games>
+              <day date="2026-04-20">
+                <game league="NHL" id="2025030111" game_type="3" away_code="A" home_code="B" />
+              </day>
+              <day date="2026-05-05">
+                <game league="NHL" id="2025030211" game_type="3" away_code="C" home_code="D" />
+              </day>
+            </games>
+            """
+        )
+
+        before_round_two = _playoff_rounds_started_from_xml_root(root, dt.date(2026, 5, 4))
+        first_day_round_two = _playoff_rounds_started_from_xml_root(root, dt.date(2026, 5, 5))
+
+        self.assertEqual(before_round_two, {1})
+        self.assertEqual(first_day_round_two, {1, 2})
 
 
 class PlayoffSeriesProbabilityTests(unittest.TestCase):

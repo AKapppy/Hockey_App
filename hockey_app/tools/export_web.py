@@ -10,12 +10,17 @@ from typing import Any
 import pandas as pd
 
 from hockey_app.data.paths import sims_dir
+from hockey_app.data.cache import DiskCache
+from hockey_app.data.nhl_api import NHLApi
+from hockey_app.data.paths import nhl_dir
 from hockey_app.data.xml_cache import (
     read_game_stats_xml,
     read_games_day_xml,
     read_player_stats_xml,
     read_table_xml,
     read_team_stats_xml,
+    write_games_day_xml,
+    write_table_xml,
 )
 from hockey_app.domain.colors import build_team_color_map, theme_adjusted_line_color
 from hockey_app.domain.teams import TEAM_NAMES, TEAM_TO_CONF, TEAM_TO_DIV, canon_team_code
@@ -139,6 +144,123 @@ def _date_range(start: dt.date, end: dt.date) -> list[dt.date]:
     if end < start:
         return []
     return [start + dt.timedelta(days=i) for i in range((end - start).days + 1)]
+
+
+def _is_final_state(value: Any) -> bool:
+    text = str(value or "").upper().strip()
+    return text in {"FINAL", "OFF"} or text.startswith("FINAL")
+
+
+def _is_regular_nhl_game(game: dict[str, Any]) -> bool:
+    game_type = str(
+        game.get("gameType")
+        or game.get("gameTypeId")
+        or game.get("game_type")
+        or game.get("game_type_id")
+        or ""
+    ).upper().strip()
+    gid = str(game.get("id") or game.get("gameId") or "")
+    if game_type:
+        return game_type in {"2", "R", "REG", "REGULAR"}
+    return not (len(gid) >= 6 and gid[4:6] == "03")
+
+
+def _team_code(team_obj: dict[str, Any]) -> str:
+    if not isinstance(team_obj, dict):
+        return ""
+    raw = team_obj.get("abbrev") or team_obj.get("abbreviation") or team_obj.get("teamAbbrev") or ""
+    return canon_team_code(str(raw).upper().strip())
+
+
+def _score_value(team_obj: dict[str, Any]) -> int:
+    try:
+        return int(float(team_obj.get("score") if isinstance(team_obj, dict) else 0))
+    except Exception:
+        return 0
+
+
+def _build_score_tables_from_games(days: list[tuple[dt.date, list[dict[str, Any]]]]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    codes = sorted(TEAM_NAMES.keys())
+    points = {code: 0 for code in codes}
+    goal_diff = {code: 0 for code in codes}
+    points_cols: dict[str, list[int]] = {}
+    gd_cols: dict[str, list[int]] = {}
+
+    for day, games in days:
+        for game in games:
+            if not isinstance(game, dict) or not _is_regular_nhl_game(game):
+                continue
+            if not _is_final_state(game.get("gameState") or game.get("gameStatus") or game.get("state")):
+                continue
+            away = game.get("awayTeam") if isinstance(game.get("awayTeam"), dict) else {}
+            home = game.get("homeTeam") if isinstance(game.get("homeTeam"), dict) else {}
+            away_code = _team_code(away)
+            home_code = _team_code(home)
+            if away_code not in points or home_code not in points:
+                continue
+            away_score = _score_value(away)
+            home_score = _score_value(home)
+            if away_score == home_score:
+                continue
+            went_extra = "OT" in str(game.get("statusText") or "").upper() or "SO" in str(game.get("statusText") or "").upper()
+            if home_score > away_score:
+                points[home_code] += 2
+                points[away_code] += 1 if went_extra else 0
+            else:
+                points[away_code] += 2
+                points[home_code] += 1 if went_extra else 0
+            goal_diff[home_code] += home_score - away_score
+            goal_diff[away_code] += away_score - home_score
+
+        col = f"{day.month}/{day.day}"
+        points_cols[col] = [points[code] for code in codes]
+        gd_cols[col] = [goal_diff[code] for code in codes]
+
+    return (
+        pd.DataFrame(points_cols, index=codes, dtype="float64"),
+        pd.DataFrame(gd_cols, index=codes, dtype="float64"),
+    )
+
+
+def _refresh_desktop_xml_data(*, season: str, start: dt.date, end: dt.date) -> None:
+    api = NHLApi(DiskCache(nhl_dir(season)))
+    fetched_days: list[tuple[dt.date, list[dict[str, Any]]]] = []
+    for day in _date_range(start, end):
+        try:
+            payload = api.score(day, force_network=(day >= dt.date.today()))
+        except Exception:
+            payload = {}
+        games = [g for g in list(payload.get("games") or []) if isinstance(g, dict)]
+        if games:
+            prepared: list[dict[str, Any]] = []
+            for game in games:
+                cur = dict(game)
+                cur["league"] = "NHL"
+                prepared.append(cur)
+            write_games_day_xml(season=season, day=day, games=prepared)
+        fetched_days.append((day, games))
+
+    if not fetched_days:
+        return
+    points_df, goal_diff_df = _build_score_tables_from_games(fetched_days)
+    write_table_xml(
+        season=season,
+        lump="points_history",
+        league="NHL",
+        start=start,
+        end=end,
+        df=points_df,
+        phase="Regular Season",
+    )
+    write_table_xml(
+        season=season,
+        lump="goal_differential",
+        league="NHL",
+        start=start,
+        end=end,
+        df=goal_diff_df,
+        phase="Regular Season",
+    )
 
 
 def _export_games(season: str, start: dt.date, end: dt.date) -> dict[str, Any]:
@@ -374,6 +496,11 @@ def export_web(
         if errors:
             joined = "\n".join(f"- {msg}" for msg in errors)
             raise SystemExit(f"Failed to refresh simulations:\n{joined}")
+        _refresh_desktop_xml_data(
+            season=season,
+            start=_season_start(season),
+            end=refresh_end,
+        )
 
     dates = _csv_dates(simulations_dir)
     if not dates:

@@ -27,8 +27,9 @@ PUBLIC_MODEL_SIMS_BACKFILL = 120
 PUBLIC_MODEL_SIMS_BACKFILL_MIN = 20
 PUBLIC_MODEL_BACKFILL_WORK_BUDGET = 9000
 PUBLIC_STRENGTH_SHRINK = 0.72
+PUBLIC_STRENGTH_FULL_WEIGHT_GAMES = 35
 PUBLIC_LOGIT_SCALE = 0.95
-PUBLIC_MODEL_CACHE_VERSION = 4
+PUBLIC_MODEL_CACHE_VERSION = 6
 
 
 @dataclass
@@ -82,6 +83,23 @@ def _is_final_state(state: str) -> bool:
 def _is_ot_or_so(status_text: str) -> bool:
     u = str(status_text or "").upper()
     return "OT" in u or "SO" in u
+
+
+def _is_playoff_game_row(row: dict[str, Any]) -> bool:
+    game_type = str(
+        row.get("game_type")
+        or row.get("game_type_id")
+        or row.get("game_type_code")
+        or ""
+    ).upper().strip()
+    gid = str(row.get("id") or "").strip()
+    return game_type in {"3", "P", "PO", "PLAYOFFS"} or (len(gid) >= 6 and gid[4:6] == "03")
+
+
+def _series_key(a: str, b: str) -> tuple[str, str]:
+    aa = canon_team_code(str(a).upper().strip())
+    bb = canon_team_code(str(b).upper().strip())
+    return tuple(sorted((aa, bb)))  # type: ignore[return-value]
 
 
 def _games_xml_path(season: str) -> Path:
@@ -174,6 +192,10 @@ def _load_games_from_xml(season: str) -> list[dict[str, Any]]:
                 "date": day,
                 "state": str(g.get("state") or "").upper().strip(),
                 "status_text": str(g.get("status_text") or "").strip(),
+                "game_type": str(g.get("game_type") or "").strip(),
+                "game_type_id": str(g.get("game_type_id") or "").strip(),
+                "game_type_code": str(g.get("game_type_code") or "").strip(),
+                "playoff_round": _safe_int(g.get("playoff_round"), default=0),
                 "away": away,
                 "home": home,
                 "away_score": _safe_int(g.get("away_score"), default=0),
@@ -328,7 +350,12 @@ def _estimate_team_strengths(teams: dict[str, TeamState]) -> None:
     gdpg_z = _zscore_by_team(gdpg)
     goalie_z = _zscore_by_team(goalie)
     for code, t in teams.items():
-        t.strength = float(PUBLIC_STRENGTH_SHRINK) * (
+        gp_confidence = _clamp(
+            float(t.games_played) / float(max(1, PUBLIC_STRENGTH_FULL_WEIGHT_GAMES)),
+            0.0,
+            1.0,
+        )
+        t.strength = float(PUBLIC_STRENGTH_SHRINK) * gp_confidence * (
             0.17 * float(ppct_z.get(code, 0.0))
             + 0.54 * float(gdpg_z.get(code, 0.0))
             + 0.29 * float(goalie_z.get(code, 0.0))
@@ -535,12 +562,17 @@ def _simulate_series(
     h2h_points: dict[tuple[str, str], int],
     h2h_games: dict[tuple[str, str], int],
     rng: random.Random,
+    series_scores: dict[tuple[str, str], dict[str, int]] | None = None,
 ) -> str:
     home_ice = _better_team_for_home_ice(team_a, team_b, teams, h2h_points, h2h_games)
     road = team_b if home_ice == team_a else team_a
     schedule = [home_ice, home_ice, road, road, home_ice, road, home_ice]
-    wins = {team_a: 0, team_b: 0}
-    for home in schedule:
+    known = (series_scores or {}).get(_series_key(team_a, team_b), {})
+    wins = {team_a: int(known.get(team_a, 0)), team_b: int(known.get(team_b, 0))}
+    if wins[team_a] >= 4 or wins[team_b] >= 4:
+        return team_a if wins[team_a] > wins[team_b] else team_b
+    played_games = max(0, min(7, int(wins[team_a]) + int(wins[team_b])))
+    for home in schedule[played_games:]:
         away = road if home == home_ice else home_ice
         p_home = _playoff_game_home_win_prob(home, away, teams)
         if rng.random() < p_home:
@@ -559,6 +591,7 @@ def _simulate_playoffs(
     h2h_points: dict[tuple[str, str], int],
     h2h_games: dict[tuple[str, str], int],
     rng: random.Random,
+    series_scores: dict[tuple[str, str], dict[str, int]] | None = None,
 ) -> dict[str, int]:
     # 0=no playoffs, 1=playoffs, 2=round2, 3=round3, 4=finals, 5=cup
     result = {code: 0 for code in teams}
@@ -583,12 +616,12 @@ def _simulate_playoffs(
         for div, round1 in bracket.items():
             winners: list[str] = []
             for a, b in round1:
-                w = _simulate_series(a, b, teams, h2h_points, h2h_games, rng)
+                w = _simulate_series(a, b, teams, h2h_points, h2h_games, rng, series_scores)
                 result[w] = max(result[w], 2)
                 winners.append(w)
             if len(winners) < 2:
                 continue
-            div_w = _simulate_series(winners[0], winners[1], teams, h2h_points, h2h_games, rng)
+            div_w = _simulate_series(winners[0], winners[1], teams, h2h_points, h2h_games, rng, series_scores)
             result[div_w] = max(result[div_w], 3)
             division_winners[div] = div_w
 
@@ -602,6 +635,7 @@ def _simulate_playoffs(
             h2h_points,
             h2h_games,
             rng,
+            series_scores,
         )
         result[conf_w] = max(result[conf_w], 4)
         conference_champs[conf] = conf_w
@@ -615,23 +649,91 @@ def _simulate_playoffs(
             h2h_points,
             h2h_games,
             rng,
+            series_scores,
         )
         result[cup_w] = max(result[cup_w], 5)
 
     return result
 
 
+def _playoff_series_scores_from_rows(
+    rows: list[dict[str, Any]],
+    today: dt.date,
+) -> dict[tuple[str, str], dict[str, int]]:
+    out: dict[tuple[str, str], dict[str, int]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not _is_playoff_game_row(row):
+            continue
+        day = row.get("date")
+        if not isinstance(day, dt.date) or day > today:
+            continue
+        if not _is_final_state(str(row.get("state") or "")):
+            continue
+        away = canon_team_code(str(row.get("away") or "").upper().strip())
+        home = canon_team_code(str(row.get("home") or "").upper().strip())
+        if away not in TEAM_NAMES or home not in TEAM_NAMES:
+            continue
+        away_score = _safe_int(row.get("away_score"), default=0)
+        home_score = _safe_int(row.get("home_score"), default=0)
+        if away_score == home_score:
+            continue
+        winner = away if away_score > home_score else home
+        key = _series_key(away, home)
+        bucket = out.setdefault(key, {away: 0, home: 0})
+        bucket.setdefault(away, 0)
+        bucket.setdefault(home, 0)
+        bucket[winner] = int(bucket.get(winner, 0)) + 1
+    return out
+
+
+def _playoffs_started_from_rows(rows: list[dict[str, Any]], today: dt.date) -> bool:
+    for row in rows:
+        if not isinstance(row, dict) or not _is_playoff_game_row(row):
+            continue
+        day = row.get("date")
+        if isinstance(day, dt.date) and day <= today:
+            return True
+    return False
+
+
+def _current_playoff_field(
+    teams: dict[str, TeamState],
+    h2h_points: dict[tuple[str, str], int],
+    h2h_games: dict[tuple[str, str], int],
+) -> set[str]:
+    field: set[str] = set()
+    for conf in sorted({t.conference for t in teams.values()}):
+        bracket = _build_conference_bracket(conf, teams, h2h_points, h2h_games)
+        if not bracket:
+            continue
+        for series_list in bracket.values():
+            for a, b in series_list:
+                field.add(a)
+                field.add(b)
+    return field
+
+
 def _build_sim_inputs(
     season: str,
     today: dt.date,
-) -> tuple[dict[str, TeamState], list[RemainingGame], dict[tuple[str, str], int], dict[tuple[str, str], int]]:
+) -> tuple[
+    dict[str, TeamState],
+    list[RemainingGame],
+    dict[tuple[str, str], int],
+    dict[tuple[str, str], int],
+    bool,
+    dict[tuple[str, str], dict[str, int]],
+]:
     teams = _blank_team_states()
     h2h_points: dict[tuple[str, str], int] = {}
     h2h_games: dict[tuple[str, str], int] = {}
     rows = _dedupe_games(_load_games_from_xml(season))
+    playoffs_started = _playoffs_started_from_rows(rows, today)
+    playoff_series_scores = _playoff_series_scores_from_rows(rows, today)
     remaining: list[RemainingGame] = []
 
     for g in rows:
+        is_playoff = _is_playoff_game_row(g)
         home = str(g.get("home") or "").upper()
         away = str(g.get("away") or "").upper()
         if home not in teams or away not in teams:
@@ -643,6 +745,9 @@ def _build_sim_inputs(
         status_text = str(g.get("status_text") or "")
         hs = _safe_int(g.get("home_score"), default=0)
         as_ = _safe_int(g.get("away_score"), default=0)
+
+        if is_playoff:
+            continue
 
         if _is_final_state(state) and day <= today:
             _apply_final_result(
@@ -670,7 +775,7 @@ def _build_sim_inputs(
         )
 
     remaining.sort(key=lambda x: (x.game_date, x.game_id, x.home, x.away))
-    return teams, remaining, h2h_points, h2h_games
+    return teams, remaining, h2h_points, h2h_games, playoffs_started, playoff_series_scores
 
 
 def _playoff_math_overrides(
@@ -720,6 +825,8 @@ def _run_monte_carlo(
     *,
     n_sims: int = PUBLIC_MODEL_SIMS,
     seed: int = 17,
+    playoffs_started: bool = False,
+    playoff_series_scores: dict[tuple[str, str], dict[str, int]] | None = None,
 ) -> dict[str, dict[str, float]]:
     n = max(20, int(n_sims))
     rng = random.Random(int(seed))
@@ -751,7 +858,13 @@ def _run_monte_carlo(
             )
 
         _estimate_team_strengths(teams)
-        reached = _simulate_playoffs(teams, h2h_points, h2h_games, rng)
+        reached = _simulate_playoffs(
+            teams,
+            h2h_points,
+            h2h_games,
+            rng,
+            playoff_series_scores if playoffs_started else None,
+        )
         for code in codes:
             stage = int(reached.get(code, 0))
             if stage >= 1:
@@ -776,17 +889,29 @@ def _run_monte_carlo(
             "cup": _clamp(float(c["cup"]) / float(n), 0.0, 1.0),
         }
 
-    # Apply strict playoff 0/100 bounds only when mathematically forced.
-    overrides = _playoff_math_overrides(teams_base, remaining_games)
-    for code, forced in overrides.items():
-        if code not in out:
-            continue
-        out[code]["make_playoffs"] = float(forced)
-        if forced <= 0.0:
-            out[code]["round2"] = 0.0
-            out[code]["round3"] = 0.0
-            out[code]["finals"] = 0.0
-            out[code]["cup"] = 0.0
+    if playoffs_started:
+        field = _current_playoff_field(teams_base, h2h_points_base, h2h_games_base)
+        for code in codes:
+            if code in field:
+                out[code]["make_playoffs"] = 1.0
+            else:
+                out[code]["make_playoffs"] = 0.0
+                out[code]["round2"] = 0.0
+                out[code]["round3"] = 0.0
+                out[code]["finals"] = 0.0
+                out[code]["cup"] = 0.0
+    else:
+        # Apply strict playoff 0/100 bounds only when mathematically forced.
+        overrides = _playoff_math_overrides(teams_base, remaining_games)
+        for code, forced in overrides.items():
+            if code not in out:
+                continue
+            out[code]["make_playoffs"] = float(forced)
+            if forced <= 0.0:
+                out[code]["round2"] = 0.0
+                out[code]["round3"] = 0.0
+                out[code]["finals"] = 0.0
+                out[code]["cup"] = 0.0
     return out
 
 
@@ -874,7 +999,7 @@ def _snapshot_probs_for_day(
     if cached_probs:
         return cached_probs
 
-    teams, remaining, h2h_points, h2h_games = _build_sim_inputs(season, day)
+    teams, remaining, h2h_points, h2h_games, playoffs_started, playoff_series_scores = _build_sim_inputs(season, day)
     if not teams:
         return {}
 
@@ -890,6 +1015,8 @@ def _snapshot_probs_for_day(
         h2h_games,
         n_sims=run_sims,
         seed=17 + int(day.toordinal()),
+        playoffs_started=playoffs_started,
+        playoff_series_scores=playoff_series_scores,
     )
     if not probs:
         return {}

@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox, ttk
@@ -59,6 +60,31 @@ PWHL_TEAM_NAMES: dict[str, str] = {
 }
 
 
+def _empty_prediction_tables_for_range(
+    codes: list[str],
+    *,
+    start_date: dt.date,
+    end_date: dt.date,
+) -> dict[str, pd.DataFrame]:
+    if end_date < start_date:
+        end_date = start_date
+    base_codes = sorted({str(code) for code in codes})
+    if not base_codes:
+        base_codes = sorted(PWHL_TEAM_NAMES.keys())
+    columns = [
+        f"{(start_date + dt.timedelta(days=i)).month}/{(start_date + dt.timedelta(days=i)).day}"
+        for i in range((end_date - start_date).days + 1)
+    ] or [f"{start_date.month}/{start_date.day}"]
+    return {
+        metric_key: pd.DataFrame(
+            {col: [0.0 for _ in base_codes] for col in columns},
+            index=base_codes,
+            dtype="float64",
+        )
+        for metric_key in ("madeplayoffs", "round2", "round3", "round4", "woncup")
+    }
+
+
 def launch_predictions_ui_window(
     tables: dict[str, pd.DataFrame],
     *,
@@ -77,6 +103,8 @@ def launch_predictions_ui_window(
     build_team_color_map: Callable[[set[str] | None], dict[str, str]],
     ensure_logo_cached: Callable[[str], None],
     logo_path: Callable[[str], Path],
+    predictions_tables_stale: bool = False,
+    refresh_predictions_tables: Callable[[], dict[str, pd.DataFrame]] | None = None,
 ) -> None:
     prof = StartupProfiler()
     scaffold = build_notebook_scaffold(season=season, dark_window_bg=dark_window_bg)
@@ -104,9 +132,12 @@ def launch_predictions_ui_window(
 
     public_pred_notebook = ttk.Notebook(public_predictions_page, style="NB.TNotebook")
     public_pred_notebook.grid(row=0, column=0, sticky="nsew", pady=(0, 0))
+    public_model_status_var = tk.StringVar(
+        value="Public NHL API model (non-MoneyPuck) | current snapshot"
+    )
     tk.Label(
         public_predictions_page,
-        text=f"Public NHL API model (non-MoneyPuck) | {int(PUBLIC_MODEL_SIMS)} sims/team",
+        textvariable=public_model_status_var,
         bg=dark_window_bg,
         fg="#9a9a9a",
         font=("TkDefaultFont", 9),
@@ -127,20 +158,69 @@ def launch_predictions_ui_window(
     all_codes_set = set(all_codes)
     team_colors = build_team_color_map(all_codes_set)
     public_start_date = start_date
-    public_tables = build_public_probability_tables(
-        season,
-        today=dt.date.today(),
+    public_today = dt.date.today()
+    public_tables = _empty_prediction_tables_for_range(
+        all_codes or sorted(team_names.keys()),
         start_date=public_start_date,
+        end_date=public_today,
     )
-    if not public_tables:
-        col = f"{public_start_date.month}/{public_start_date.day}"
-        base_codes = sorted(all_codes_set or set(team_names.keys()))
-        for metric_key in ("madeplayoffs", "round2", "round3", "round4", "woncup"):
-            public_tables[metric_key] = pd.DataFrame(
-                {col: [0.0 for _ in base_codes]},
-                index=base_codes,
-                dtype="float64",
+    public_history_state: dict[str, Any] = {
+        "started": False,
+        "loaded": False,
+    }
+
+    def _start_public_history_build() -> None:
+        if bool(public_history_state.get("started")) or bool(public_history_state.get("loaded")):
+            return
+        public_history_state["started"] = True
+        try:
+            public_model_status_var.set(
+                f"Public NHL API model (non-MoneyPuck) | loading history..."
             )
+        except Exception:
+            pass
+
+        def _worker() -> None:
+            try:
+                full_tables = build_public_probability_tables(
+                    season,
+                    today=dt.date.today(),
+                    start_date=public_start_date,
+                )
+            except Exception:
+                full_tables = {}
+
+            def _done() -> None:
+                if full_tables:
+                    public_tables.clear()
+                    public_tables.update(full_tables)
+                    public_history_state["loaded"] = True
+                    try:
+                        if isinstance(public_pred_tabs_ctrl, dict) and callable(public_pred_tabs_ctrl.get("redraw")):
+                            public_pred_tabs_ctrl["redraw"]()
+                    except Exception:
+                        pass
+                    try:
+                        public_model_status_var.set(
+                            f"Public NHL API model (non-MoneyPuck) | {int(PUBLIC_MODEL_SIMS)} sims/team"
+                        )
+                    except Exception:
+                        pass
+                else:
+                    public_history_state["started"] = False
+                    try:
+                        public_model_status_var.set(
+                            f"Public NHL API model (non-MoneyPuck) | current snapshot"
+                        )
+                    except Exception:
+                        pass
+
+            try:
+                root.after(0, _done)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     logo_bank = LogoBank(
         root,
@@ -1092,9 +1172,11 @@ def launch_predictions_ui_window(
         # Scoreboard refreshes can change same-day standings/model inputs when a
         # game finishes while the app is open, but that should not reset local
         # view state like selected phase/mode on other tabs. Refresh loaded tabs
-        # in place through their controllers instead of remounting them.
-        if isinstance(event, dict) and event.get("reason") != "game_final":
-            return
+        # in place through their controllers instead of remounting them. The
+        # bracket and playoff win probabilities also depend on newly cached
+        # playoff games/series scores, so refresh those on every scoreboard data
+        # refresh even when no final-state transition was observed.
+        event_reason = str(event.get("reason") or "") if isinstance(event, dict) else ""
         for tab in (
             scaffold.points_tab,
             scaffold.team_stats_tab,
@@ -1107,6 +1189,11 @@ def launch_predictions_ui_window(
             scaffold.playoff_win_probabilities_tab,
         ):
             if tab is None:
+                continue
+            if (
+                tab not in (scaffold.playoff_picture_tab, scaffold.playoff_win_probabilities_tab)
+                and event_reason != "game_final"
+            ):
                 continue
             ctrl = controllers.get(str(tab))
             if not isinstance(ctrl, dict):
@@ -1155,6 +1242,8 @@ def launch_predictions_ui_window(
             return
         if selected == str(scaffold.scoreboard_page):
             _load_scoreboard_if_needed()
+        elif selected == str(public_predictions_page):
+            _start_public_history_build()
         elif selected == str(scaffold.stats_page):
             _ensure_stats_tab_loaded()
         elif selected == str(scaffold.models_page):
@@ -1185,6 +1274,45 @@ def launch_predictions_ui_window(
         get_active_league=lambda: str(app_state.get("stats_league", "NHL")),
     )
     prof.mark("mount_predictions_tabs")
+
+    prediction_refresh_state: dict[str, Any] = {
+        "started": False,
+        "loaded": not bool(predictions_tables_stale),
+    }
+
+    def _start_predictions_table_refresh() -> None:
+        if refresh_predictions_tables is None:
+            return
+        if bool(prediction_refresh_state.get("started")) or bool(prediction_refresh_state.get("loaded")):
+            return
+        prediction_refresh_state["started"] = True
+
+        def _worker() -> None:
+            try:
+                fresh_tables = refresh_predictions_tables()
+            except Exception:
+                fresh_tables = {}
+
+            def _done() -> None:
+                if fresh_tables:
+                    tables.clear()
+                    tables.update(fresh_tables)
+                    prediction_refresh_state["loaded"] = True
+                    try:
+                        if isinstance(pred_tabs_ctrl, dict) and callable(pred_tabs_ctrl.get("redraw")):
+                            pred_tabs_ctrl["redraw"]()
+                    except Exception:
+                        pass
+                else:
+                    prediction_refresh_state["started"] = False
+
+            try:
+                root.after(0, _done)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     public_pred_tabs_ctrl = mount_predictions_tabs(
         public_pred_notebook,
         public_tables,
@@ -1213,6 +1341,8 @@ def launch_predictions_ui_window(
         scaffold.main_notebook.select(scaffold.scoreboard_page)
     except Exception:
         pass
+    if predictions_tables_stale:
+        _start_predictions_table_refresh()
 
     prof.mark("initial_tab_select")
     prof.emit(prefix="[ui-startup]")

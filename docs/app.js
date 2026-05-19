@@ -1,5 +1,5 @@
 (function () {
-  const data = window.HOCKEY_APP_DATA;
+  let data = window.HOCKEY_APP_DATA;
   const app = document.getElementById("app");
 
   if (!data || !data.tables) {
@@ -7,11 +7,21 @@
     return;
   }
 
-  const metricOrder = data.metrics.map((m) => m.key);
-  const metricLabels = Object.fromEntries(data.metrics.map((m) => [m.key, m.label]));
-  const metricTitles = Object.fromEntries(data.metrics.map((m) => [m.key, m.title]));
-  const byCode = new Map(data.teams.map((t) => [t.code, t]));
-  const desktop = data.desktop || {};
+  let metricOrder = [];
+  let metricLabels = {};
+  let metricTitles = {};
+  let byCode = new Map();
+  let desktop = {};
+  function hydrateData(nextData) {
+    data = nextData;
+    metricOrder = (data.metrics || []).map((m) => m.key);
+    metricLabels = Object.fromEntries((data.metrics || []).map((m) => [m.key, m.label]));
+    metricTitles = Object.fromEntries((data.metrics || []).map((m) => [m.key, m.title]));
+    byCode = new Map((data.teams || []).map((t) => [t.code, t]));
+    desktop = data.desktop || {};
+  }
+  hydrateData(data);
+
   const divisions = ["Pacific", "Central", "Atlantic", "Metro"];
   const tableHeaders = {
     madeplayoffs: "Playoffs",
@@ -30,6 +40,7 @@
     ["VAN", "Vancouver"],
     ["SEA", "Seattle"],
   ];
+  const webMainTabs = ["Scoreboard", "Stats", "Predictions", "Models"];
 
   const state = {
     mainTab: "Scoreboard",
@@ -141,6 +152,63 @@
     const date = new Date(`${value}T00:00:00`);
     if (Number.isNaN(date.getTime())) return value;
     return `${date.getDate()} ${date.toLocaleString("en-US", { month: "long" })} ${date.getFullYear()}`;
+  }
+
+  function generatedAtLabel() {
+    const raw = data.metadata && data.metadata.generatedAt;
+    if (!raw) return "";
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return `Data: ${raw}`;
+    const ageMs = Date.now() - date.getTime();
+    const stale = ageMs > 1000 * 60 * 60 * 26;
+    const label = date.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    return `${stale ? "Stale data" : "Data"}: ${label}`;
+  }
+
+  function backendDataEndpoint() {
+    const config = window.HOCKEY_APP_CONFIG || {};
+    const explicit = config.dataEndpoint || window.HOCKEY_APP_DATA_ENDPOINT || "";
+    if (explicit) return String(explicit);
+    const apiBase = config.apiBase || window.HOCKEY_APP_API_BASE || "";
+    if (apiBase) return `${String(apiBase).replace(/\/$/, "")}/api/data`;
+    if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+      return `${window.location.origin}/api/data`;
+    }
+    return "";
+  }
+
+  function clampStateToData() {
+    if (state.selectedTeam && !byCode.has(state.selectedTeam)) state.selectedTeam = null;
+    state.dateIdx = clampDate(state.dateIdx);
+    state.modelDateIdx = clampDesktopDate("points", state.modelDateIdx);
+    if (state.scoreboardDate && !scoreboardDays().includes(state.scoreboardDate)) {
+      state.scoreboardDate = null;
+    }
+  }
+
+  async function refreshDataFromBackend() {
+    const endpoint = backendDataEndpoint();
+    if (!endpoint) return;
+    try {
+      const response = await fetch(endpoint, { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = await response.json();
+      if (payload && payload.update) {
+        console.info("Hockey app web data update:", payload.update);
+      }
+      if (payload && payload.data && payload.data.tables) {
+        hydrateData(payload.data);
+        clampStateToData();
+        render();
+      }
+    } catch (error) {
+      console.warn("Hockey app web data update failed; using bundled data.", error);
+    }
   }
 
   function scoreboardDays() {
@@ -281,7 +349,7 @@
     app.innerHTML = `
       ${renderGlobalControls()}
       <div class="notebook">
-        ${renderTabbar(["Scoreboard", "Stats", "Predictions", "Predictions 2", "Models"], state.mainTab, "main")}
+        ${renderTabbar(webMainTabs, state.mainTab, "main")}
         <div class="page">${renderMainPage()}</div>
       </div>
       <div id="menu-host"></div>
@@ -296,6 +364,7 @@
     const teamText = selected ? teamName(selected) : "Choose team";
     const season = data.metadata.season || "";
     const shortSeason = season.replace(/-(\d{2})\d{2}$/, "-$1");
+    const generated = generatedAtLabel();
     return `
       <div class="global-controls">
         <div class="global-left">
@@ -304,6 +373,7 @@
           <button class="tk-button" data-action="toggle-league">League: ${esc(state.league)}</button>
         </div>
         <div class="global-right">
+          ${generated ? `<span class="data-stamp">${esc(generated)}</span>` : ""}
           <button class="tk-button ${state.openMenu === "season" ? "is-open" : ""}" data-action="season-menu">Season: ${esc(shortSeason || season)}</button>
         </div>
       </div>
@@ -338,7 +408,6 @@
     }
     if (state.mainTab === "Stats") return renderStatsPage();
     if (state.mainTab === "Predictions") return renderPredictionsPage("predTab", "Data collected from MoneyPuck.com");
-    if (state.mainTab === "Predictions 2") return renderPredictionsPage("pred2Tab", "Public NHL API model (non-MoneyPuck) | static export uses MoneyPuck data");
     return renderModelsPage();
   }
 
@@ -379,7 +448,11 @@
     const scoreboard = desktop.scoreboard || {};
     const days = scoreboard.days || {};
     const day = currentScoreboardDay();
-    const games = day ? (days[day] || []) : [];
+    const rawGames = day ? (days[day] || []) : [];
+    const games = rawGames.filter((game) => {
+      const enteringSeriesScores = playoffSeriesScoresByDay(day, false, playoffRoundFromGame(game));
+      return !shouldHideCompletedPlayoffSeriesGame(game, enteringSeriesScores);
+    });
     if (!games.length) return renderComingSoon("Scoreboard", "No exported scoreboard data is available yet.");
     const grouped = groupScoreboardGames(games);
     return `
@@ -390,7 +463,7 @@
           <section class="scoreboard-section">
             <div class="scoreboard-section-title">${esc(league)}</div>
             <div class="scoreboard-grid">
-              ${leagueGames.map(renderGameCard).join("")}
+              ${leagueGames.map((game) => renderGameCard(game, day)).join("")}
             </div>
           </section>
         `).join("")}
@@ -452,13 +525,16 @@
     const periodType = String(period.periodType || "").toUpperCase().trim();
     const periodNumber = Number(period.number);
 
-    if (state === "FINAL" || state === "OFF" || state.startsWith("FINAL")) {
+    if (isEffectivelyFinalGame(game)) {
       if (periodType === "OT" || periodType === "SO") return `FINAL - ${periodType}`;
-      return status || "FINAL";
+      return status.toUpperCase().includes("FINAL") ? status : "FINAL";
     }
 
     if (state === "LIVE" || state === "CRIT") {
       if (periodType === "OT" || periodType === "SO") {
+        if (periodType === "OT" && Number(game.away?.score || 0) === Number(game.home?.score || 0) && inIntermission) {
+          return "3RD INTERMISSION";
+        }
         if (inIntermission) return `${periodType} INTERMISSION`;
         if (timeRemaining) return `${periodType} - ${timeRemaining}`;
         return periodType || status || "LIVE";
@@ -475,29 +551,124 @@
     return status || state || "";
   }
 
+  function isZeroClock(value) {
+    return /^0*:00$/.test(String(value || "").trim());
+  }
+
+  function isRegulationLeadAtEnd(game) {
+    const awayScore = Number(game.away?.score || 0);
+    const homeScore = Number(game.home?.score || 0);
+    if (awayScore === homeScore) return false;
+    const state = String(game.state || "").toUpperCase();
+    if (state === "FINAL" || state === "OFF" || state.startsWith("FINAL")) return true;
+    const period = game.periodDescriptor || {};
+    const periodType = String(period.periodType || "").toUpperCase().trim();
+    const periodNumber = Number(period.number);
+    if (periodType === "OT" || periodType === "SO" || periodNumber !== 3) return false;
+    const clock = game.clock || {};
+    const status = String(game.status || "").toUpperCase();
+    return Boolean(clock.inIntermission) || isZeroClock(clock.timeRemaining || clock.time) || status.includes("END 3") || status.includes("END OF 3");
+  }
+
+  function isEffectivelyFinalGame(game) {
+    const state = String(game.state || "").toUpperCase();
+    return state === "FINAL" || state === "OFF" || state.startsWith("FINAL") || isRegulationLeadAtEnd(game);
+  }
+
   function scoreboardShotsLabel(team) {
     const shots = Number(team && team.shots);
     return Number.isFinite(shots) ? `SOG ${shots}` : "";
   }
 
-  function renderGameCard(game) {
+  function playoffEliminationTeam(game, seriesScores) {
+    if (!isNhlPlayoffGame(game)) return "";
+    const away = String((game.away || {}).code || "").toUpperCase();
+    const home = String((game.home || {}).code || "").toUpperCase();
+    if (!away || !home) return "";
+    const wins = (seriesScores && seriesScores[[away, home].sort().join("|")]) || {};
+    const awayWins = Number(wins[away] || 0);
+    const homeWins = Number(wins[home] || 0);
+    if (awayWins === 3 && homeWins < 3) return home;
+    if (homeWins === 3 && awayWins < 3) return away;
+    return "";
+  }
+
+  function playoffSeriesScore(game, seriesScores) {
+    if (!isNhlPlayoffGame(game)) return null;
+    const away = String((game.away || {}).code || "").toUpperCase();
+    const home = String((game.home || {}).code || "").toUpperCase();
+    if (!away || !home) return null;
+    const wins = (seriesScores && seriesScores[[away, home].sort().join("|")]) || {};
+    return [Number(wins[away] || 0), Number(wins[home] || 0)];
+  }
+
+  function playoffEliminatedTeam(game, enteringSeriesScores) {
+    const eliminationTeam = playoffEliminationTeam(game, enteringSeriesScores);
+    if (!eliminationTeam || !isEffectivelyFinalGame(game)) return "";
+    const away = String((game.away || {}).code || "").toUpperCase();
+    const home = String((game.home || {}).code || "").toUpperCase();
+    const awayScore = Number((game.away || {}).score || 0);
+    const homeScore = Number((game.home || {}).score || 0);
+    if (eliminationTeam === away && awayScore < homeScore) return away;
+    if (eliminationTeam === home && homeScore < awayScore) return home;
+    return "";
+  }
+
+  function completedPlayoffSeriesWinner(wins) {
+    const winners = Object.entries(wins || {})
+      .filter(([, value]) => Number(value || 0) >= 4)
+      .map(([code]) => String(code || "").toUpperCase());
+    return winners.length === 1 ? winners[0] : "";
+  }
+
+  function isUnplayedPlayoffScheduleRow(game) {
+    if (!isNhlPlayoffGame(game)) return false;
+    const state = String(game.state || "").toUpperCase();
+    if (state === "LIVE" || state === "CRIT") return false;
+    const awayScore = Number((game.away || {}).score || 0);
+    const homeScore = Number((game.home || {}).score || 0);
+    return awayScore === homeScore;
+  }
+
+  function shouldHideCompletedPlayoffSeriesGame(game, seriesScores) {
+    if (!isUnplayedPlayoffScheduleRow(game)) return false;
+    const away = String((game.away || {}).code || "").toUpperCase();
+    const home = String((game.home || {}).code || "").toUpperCase();
+    if (!away || !home) return false;
+    const wins = (seriesScores && seriesScores[[away, home].sort().join("|")]) || {};
+    return Boolean(completedPlayoffSeriesWinner(wins));
+  }
+
+  function renderGameCard(game, day) {
+    const roundNo = playoffRoundFromGame(game);
+    const enteringSeriesScores = playoffSeriesScoresByDay(day, false, roundNo);
+    const currentSeriesScores = playoffSeriesScoresByDay(day, true, roundNo);
     const status = scoreboardStatus(game);
+    const eliminationTeam = playoffEliminationTeam(game, enteringSeriesScores);
+    const eliminatedTeam = playoffEliminatedTeam(game, enteringSeriesScores);
+    const seriesScore = playoffSeriesScore(game, currentSeriesScores);
     return `
       <article class="game-card">
+        ${seriesScore ? `<div class="game-series-score is-away">Series ${esc(seriesScore[0])}</div><div class="game-series-score is-home">Series ${esc(seriesScore[1])}</div>` : ""}
         <div class="game-meta"><span>${esc(game.league || "NHL")}</span><span class="game-meta-status">${esc(status)}</span></div>
-        ${renderGameTeam(game.away)}
-        ${renderGameTeam(game.home)}
+        ${renderGameTeam(game.away, eliminationTeam, eliminatedTeam, "away")}
+        ${renderGameTeam(game.home, eliminationTeam, eliminatedTeam, "home")}
       </article>
     `;
   }
 
-  function renderGameTeam(team) {
+  function renderGameTeam(team, eliminationTeam = "", eliminatedTeam = "", side = "") {
     const code = team.code || "";
     const score = team.score ?? "";
     const shots = scoreboardShotsLabel(team);
+    const isFacingElimination = Boolean(eliminationTeam) && String(code).toUpperCase() === String(eliminationTeam).toUpperCase();
+    const isEliminated = Boolean(eliminatedTeam) && String(code).toUpperCase() === String(eliminatedTeam).toUpperCase();
     return `
-      <div class="game-team" data-team="${esc(code)}">
-        <img src="${esc(logo(code))}" alt="">
+      <div class="game-team ${isEliminated ? "is-eliminated" : ""}" data-team="${esc(code)}">
+        <span class="game-logo-wrap is-${esc(side)}">
+          <img src="${esc(logo(code))}" alt="">
+          ${isFacingElimination ? `<span class="elimination-warning" aria-label="Facing elimination" title="Facing elimination">⚠️</span>` : ""}
+        </span>
         <div class="game-team-main">
           <span>${esc(code)}</span>
           <span class="game-team-shots">${esc(shots)}</span>
@@ -852,9 +1023,27 @@
 
   function bracketTeams(pts) {
     return [
-      ...conferenceBracketTeams(pts, "Pacific", "Central", "WestWC"),
+      ...conferenceBracketTeams(pts, "Central", "Pacific", "WestWC"),
       ...conferenceBracketTeams(pts, "Atlantic", "Metro", "EastWC"),
     ];
+  }
+
+  function playoffMatchupRingOrder(field) {
+    if (!field || field.length < 16) return (field || []).filter(Boolean);
+    const west = field.slice(0, 8).filter(Boolean);
+    const east = field.slice(8, 16).filter(Boolean);
+    const ordered = [
+      ...east.slice(4, 8),
+      ...east.slice(0, 4).reverse(),
+      ...west.slice(4, 8),
+      ...west.slice(0, 4).reverse(),
+    ];
+    const seen = new Set();
+    return ordered.filter((code) => {
+      if (!code || seen.has(code)) return false;
+      seen.add(code);
+      return true;
+    });
   }
 
   function isFinalState(stateValue) {
@@ -864,21 +1053,43 @@
 
   function isNhlPlayoffGame(game) {
     if (!game || String(game.league || "").toUpperCase() !== "NHL") return false;
-    const gameType = String(game.gameType || "").toUpperCase();
-    const gid = String(game.id || "");
-    return gameType === "3" || gameType === "P" || gid.startsWith("202503");
+    const gameType = String(game.gameType || game.gameTypeId || game.gameTypeCode || "").toUpperCase();
+    const gid = String(game.id || game.gameId || "");
+    return gameType === "3" || gameType === "P" || gameType === "PO" || gameType === "PLAYOFFS" || gid.startsWith("202503");
   }
 
-  function playoffSeriesScoresByDay(day) {
+  function playoffRoundFromGame(game) {
+    if (!game) return null;
+    const candidates = [
+      game.playoffRound,
+      game.round,
+      game.seriesStatus && game.seriesStatus.round,
+      game.playoffSeries && game.playoffSeries.playoffRound,
+      game.playoffSeries && game.playoffSeries.round,
+    ];
+    for (const value of candidates) {
+      const n = Number(value);
+      if (Number.isFinite(n) && n >= 1 && n <= 4) return Math.trunc(n);
+    }
+    const gid = String(game.id || game.gameId || "");
+    if (gid.length >= 8 && gid.slice(4, 6) === "03") {
+      const n = Number(gid.slice(6, 8));
+      if (Number.isFinite(n) && n >= 1 && n <= 4) return Math.trunc(n);
+    }
+    return null;
+  }
+
+  function playoffSeriesScoresByDay(day, includeTargetDay = true, roundNo = null) {
     const targetDay = day || currentModelDay();
     if (!targetDay) return {};
     const scoreboard = desktop.scoreboard || {};
     const days = Object.keys(scoreboard.days || {}).sort();
     const out = {};
     days.forEach((iso) => {
-      if (iso > targetDay) return;
+      if (includeTargetDay ? iso > targetDay : iso >= targetDay) return;
       (scoreboard.days[iso] || []).forEach((game) => {
-        if (!isNhlPlayoffGame(game) || !isFinalState(game.state)) return;
+        if (!isNhlPlayoffGame(game) || !isEffectivelyFinalGame(game)) return;
+        if (roundNo != null && playoffRoundFromGame(game) !== roundNo) return;
         const away = String((game.away || {}).code || "").toUpperCase();
         const home = String((game.home || {}).code || "").toUpperCase();
         const awayScore = Number((game.away || {}).score);
@@ -981,12 +1192,13 @@
 
   function renderWildcardBoard(cols, pts) {
     const wildcardDepth = Math.max(2, cols.WestWC.length, cols.EastWC.length);
+    const wildcardDivisions = ["Central", "Pacific", "Atlantic", "Metro"];
     return `
       <section class="wildcard-board">
         <div class="wildcard-board-title">Wildcard</div>
         <div class="wildcard-board-grid">
-          ${divisions.map((div) => `<div class="wildcard-head">${esc(div)}</div>`).join("")}
-          ${Array.from({ length: 3 }, (_, rowIdx) => divisions.map((div) => (
+          ${wildcardDivisions.map((div) => `<div class="wildcard-head">${esc(div)}</div>`).join("")}
+          ${Array.from({ length: 3 }, (_, rowIdx) => wildcardDivisions.map((div) => (
             renderStandingRow((cols[div] || [])[rowIdx] || "", pts, "is-wildcard")
           )).join("")).join("")}
           <div class="wildcard-spanner">West WC</div>
@@ -1074,7 +1286,7 @@
     const pts = pointsSnapshot();
     const cols = playoffColumns(pts);
     const seriesScores = playoffSeriesScoresByDay(currentModelDay());
-    const westBracket = buildConferenceBracket(conferenceBracketTeams(pts, "Pacific", "Central", "WestWC"), pts, seriesScores);
+    const westBracket = buildConferenceBracket(conferenceBracketTeams(pts, "Central", "Pacific", "WestWC"), pts, seriesScores);
     const eastBracket = buildConferenceBracket(conferenceBracketTeams(pts, "Atlantic", "Metro", "EastWC"), pts, seriesScores);
     return `
       <div class="model-page page-fill playoff-page">
@@ -1363,15 +1575,20 @@
 
   function pieOrder() {
     const present = new Set(teamCodes());
+    const playoffOrder = playoffMatchupRingOrder(bracketTeams(pointsSnapshot())).filter((code) => present.has(code));
     const order = [];
-    for (const div of ["Metro", "Atlantic", "Central", "Pacific"]) {
+    if (playoffOrder.length >= 16) {
+      order.push(...playoffOrder);
+    }
+    for (const div of ["Metro", "Atlantic", "Pacific", "Central"]) {
       const codes = data.teams
         .filter((t) => t.division === div && present.has(t.code))
         .map((t) => t.code);
       if (div === "Metro" && codes.includes("NYR")) {
-        order.push("NYR", ...codes.filter((c) => c !== "NYR"));
+        if (!order.includes("NYR")) order.push("NYR");
+        order.push(...codes.filter((c) => c !== "NYR" && !order.includes(c)));
       } else {
-        order.push(...codes);
+        order.push(...codes.filter((c) => !order.includes(c)));
       }
     }
     return order;
@@ -1744,4 +1961,5 @@
   app.addEventListener("click", onClick);
   window.addEventListener("resize", syncChromeLayout);
   render();
+  refreshDataFromBackend();
 }());

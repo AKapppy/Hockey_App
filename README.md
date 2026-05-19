@@ -25,7 +25,7 @@ python3 -m hockey_app
 
 ## Web Version
 
-The web app is static and lives in `docs/`, so it can run on GitHub Pages without a Python server.
+The web app lives in `docs/` and can still run as a static GitHub Pages site. Static hosting cannot run Python or write refreshed files when a visitor opens the page, so GitHub Pages alone cannot perform a per-visit data update.
 
 Open the hosted version:
 
@@ -45,6 +45,8 @@ Download missing MoneyPuck simulation CSVs first, then rebuild:
 python3 -m hockey_app.tools.export_web --out docs --refresh
 ```
 
+The GitHub Pages workflow also runs this refresh/export hourly. GitHub Pages is static hosting, so a page view cannot itself update repository data; the scheduled workflow is the automatic update path.
+
 Open `docs/index.html` directly, or serve the folder locally:
 
 ```bash
@@ -57,9 +59,46 @@ Then visit:
 http://localhost:8000
 ```
 
+### Live Web Updates With a Backend
+
+For per-visitor refreshes, deploy the Python backend instead of relying on GitHub Pages alone:
+
+```bash
+uvicorn hockey_app.web_backend:app --host 0.0.0.0 --port 8000
+```
+
+Then visit:
+
+```text
+http://localhost:8000
+```
+
+When the page loads, `docs/app.js` calls `/api/data`. The backend uses `hockey_app.tools.export_web(..., refresh=True)`, so it reuses the same MoneyPuck simulation download/compile path and the desktop XML-backed refresh/export logic before returning the refreshed `data.json` payload.
+
+If the static GitHub Pages frontend should call a separately hosted backend, set `docs/config.js`:
+
+```js
+window.HOCKEY_APP_CONFIG = {
+  apiBase: "https://your-backend.example.com",
+  dataEndpoint: "",
+};
+```
+
+Backend environment variables:
+
+```text
+HOCKEY_WEB_DATA_DIR=/persistent/path/docs-data
+HOCKEY_CACHE_DIR=/persistent/path/cache
+HOCKEY_WEB_STATIC_DIR=docs
+HOCKEY_WEB_REFRESH_SECONDS=900
+HOCKEY_WEB_ALLOWED_ORIGINS=https://akapppy.github.io
+```
+
+`HOCKEY_WEB_DATA_DIR` and `HOCKEY_CACHE_DIR` should point at persistent storage in production. If the host has only ephemeral or read-only filesystems, the backend can serve the current bundled data but cannot truthfully persist refreshed files across restarts. In that case, keep using the scheduled GitHub Actions export or deploy the backend on a platform with a persistent volume.
+
 ### GitHub Pages
 
-This repo includes `.github/workflows/pages.yml`, which builds the static web app and publishes it with GitHub Pages on pushes to `main`, on a daily schedule, or by manual workflow dispatch.
+This repo includes `.github/workflows/pages.yml`, which builds the static web app and publishes it with GitHub Pages on pushes to `main`, on an hourly schedule, or by manual workflow dispatch.
 
 After pushing to GitHub:
 
@@ -123,12 +162,6 @@ Smoke tests:
 
 ```bash
 python3 -m unittest discover -s tests -v
-```
-
-Export web data:
-
-```bash
-python3 -m hockey_app.tools.export_web --out docs
 ```
 
 Optional startup profiling:

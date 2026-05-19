@@ -80,6 +80,24 @@ def compile_probability_tables(
     )
 
 
+def _empty_probability_tables(start_date: dt.date, end_date: dt.date) -> dict[str, pd.DataFrame]:
+    if end_date < start_date:
+        end_date = start_date
+    cols = [
+        f"{(start_date + dt.timedelta(days=i)).month}/{(start_date + dt.timedelta(days=i)).day}"
+        for i in range((end_date - start_date).days + 1)
+    ] or [f"{start_date.month}/{start_date.day}"]
+    codes = sorted(TEAM_NAMES.keys())
+    return {
+        metric_key: pd.DataFrame(
+            {col: [0.0 for _ in codes] for col in cols},
+            index=codes,
+            dtype="float64",
+        )
+        for metric_key in TAB_ORDER
+    }
+
+
 def logo_url(team_code: str) -> str:
     return logosvc.logo_url(team_code=team_code, canon_team_code=canon_team_code, url_base=URL_LOGOS_BASE)
 
@@ -98,8 +116,30 @@ def ensure_logo_cached(team_code: str) -> None:
     )
 
 
-def launch_predictions_ui(tables: dict[str, pd.DataFrame]) -> None:
+def launch_predictions_ui(
+    tables: dict[str, pd.DataFrame],
+    *,
+    predictions_tables_stale: bool = False,
+) -> None:
     from hockey_app.ui.app_window import launch_predictions_ui_window
+
+    def _refresh_predictions_tables() -> dict[str, pd.DataFrame]:
+        errs = download_missing_simulations(START_DATE, END_DATE, SIMS_DIR)
+        if errs:
+            print("ERRORS occurred during background simulation download:")
+            for msg in errs:
+                print(f"- {msg}")
+        fresh_tables = compile_probability_tables(SIMS_DIR, START_DATE, END_DATE)
+        try:
+            write_predictions_tables_xml(
+                season=SEASON,
+                start=START_DATE,
+                end=END_DATE,
+                tables=fresh_tables,
+            )
+        except Exception:
+            pass
+        return fresh_tables
 
     launch_predictions_ui_window(
         tables,
@@ -118,6 +158,8 @@ def launch_predictions_ui(tables: dict[str, pd.DataFrame]) -> None:
         build_team_color_map=build_team_color_map,
         ensure_logo_cached=ensure_logo_cached,
         logo_path=logo_path,
+        predictions_tables_stale=predictions_tables_stale,
+        refresh_predictions_tables=_refresh_predictions_tables if predictions_tables_stale else None,
     )
 
 
@@ -139,34 +181,14 @@ def main() -> None:
         for k in TAB_ORDER
     )
 
-    if not has_complete_xml:
-        errs = download_missing_simulations(START_DATE, END_DATE, SIMS_DIR)
-        prof.mark("download_missing_simulations")
-        if errs:
-            print("ERRORS occurred during download:")
-            for msg in errs:
-                print(f"- {msg}")
-
-        try:
-            tables = compile_probability_tables(SIMS_DIR, START_DATE, END_DATE)
-        except Exception as e:
-            print(f"ERROR: failed to compile tables: {e}")
-            return
-        try:
-            write_predictions_tables_xml(
-                season=SEASON,
-                start=START_DATE,
-                end=END_DATE,
-                tables=tables,
-            )
-        except Exception:
-            pass
-        prof.mark("compile_probability_tables")
+    if not has_complete_xml and not tables:
+        tables = _empty_probability_tables(START_DATE, END_DATE)
+        prof.mark("prepare_prediction_placeholders")
     else:
         prof.mark("load_predictions_tables_xml")
 
     try:
-        launch_predictions_ui(tables)
+        launch_predictions_ui(tables, predictions_tables_stale=not has_complete_xml)
     except Exception as e:
         print(f"ERROR: failed to launch UI: {e}")
         return

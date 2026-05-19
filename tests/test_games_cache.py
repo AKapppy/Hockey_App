@@ -9,11 +9,16 @@ from zoneinfo import ZoneInfo
 from hockey_app.data.xml_cache import _status_time_sort_value, _xml_season_dir, read_games_day_xml, write_games_day_xml
 from hockey_app.ui.tabs.games import (
     _game_sort_key,
+    _is_effectively_final_game,
+    _latest_final_game_day_from_rows,
     _live_status,
+    _playoff_round_from_game,
+    _playoff_series_wins_from_rows,
     _merge_games_by_id,
     _parse_status_time_local,
     _preserve_cached_game_rows,
     _promote_live_game_row_from_gamecenter,
+    _should_hide_completed_playoff_series_game,
 )
 
 
@@ -215,6 +220,134 @@ class GamesCachePreserveTests(unittest.TestCase):
         self.assertEqual(out.get("clock"), {"timeRemaining": "5:12"})
         self.assertEqual(out.get("periodDescriptor"), {"number": 2})
         self.assertEqual(_live_status(out), "2ND - 5:12")
+
+    def test_live_gamecenter_promotion_does_not_downgrade_official_final(self) -> None:
+        game = {
+            "id": 2026020001,
+            "gameState": "FINAL",
+            "statusText": "Final/OT",
+            "awayTeam": {"abbrev": "BUF", "score": 3},
+            "homeTeam": {"abbrev": "TBL", "score": 4},
+        }
+        pbp = {
+            "gameState": "LIVE",
+            "clock": {"timeRemaining": "0:00"},
+            "periodDescriptor": {"number": 4, "periodType": "OT"},
+            "plays": [],
+        }
+
+        out = _promote_live_game_row_from_gamecenter(game, pbp=pbp)
+
+        self.assertEqual(out.get("gameState"), "FINAL")
+        self.assertTrue(_is_effectively_final_game(out))
+
+    def test_final_status_text_wins_before_regulation_override(self) -> None:
+        game = {
+            "gameState": "LIVE",
+            "statusText": "Final/OT",
+            "periodDescriptor": {"number": 4, "periodType": "OT"},
+            "awayTeam": {"abbrev": "BUF", "score": 3},
+            "homeTeam": {"abbrev": "TBL", "score": 4},
+        }
+
+        self.assertTrue(_is_effectively_final_game(game))
+
+    def test_completed_playoff_series_hides_unplayed_if_necessary_game(self) -> None:
+        game = {
+            "id": 2025030126,
+            "gameType": 3,
+            "gameState": "FUT",
+            "awayTeam": {"abbrev": "OTT", "score": 0},
+            "homeTeam": {"abbrev": "BOS", "score": 0},
+        }
+
+        hide = _should_hide_completed_playoff_series_game(
+            game,
+            {("BOS", "OTT"): {"BOS": 4, "OTT": 1}},
+        )
+
+        self.assertTrue(hide)
+
+    def test_incomplete_playoff_series_keeps_scheduled_game(self) -> None:
+        game = {
+            "id": 2025030125,
+            "gameType": 3,
+            "gameState": "FUT",
+            "awayTeam": {"abbrev": "OTT", "score": 0},
+            "homeTeam": {"abbrev": "BOS", "score": 0},
+        }
+
+        hide = _should_hide_completed_playoff_series_game(
+            game,
+            {("BOS", "OTT"): {"BOS": 3, "OTT": 1}},
+        )
+
+        self.assertFalse(hide)
+
+    def test_completed_playoff_series_keeps_actual_final_game(self) -> None:
+        game = {
+            "id": 2025030125,
+            "gameType": 3,
+            "gameState": "FINAL",
+            "awayTeam": {"abbrev": "OTT", "score": 1},
+            "homeTeam": {"abbrev": "BOS", "score": 4},
+        }
+
+        hide = _should_hide_completed_playoff_series_game(
+            game,
+            {("BOS", "OTT"): {"BOS": 4, "OTT": 1}},
+        )
+
+        self.assertFalse(hide)
+
+    def test_latest_final_game_day_ignores_future_and_nonfinal_rows(self) -> None:
+        rows_by_day = {
+            dt.date(2026, 4, 29): [
+                {"gameState": "FINAL", "awayTeam": {"score": 2}, "homeTeam": {"score": 1}},
+            ],
+            dt.date(2026, 5, 1): [
+                {"gameState": "FUT", "awayTeam": {"score": 0}, "homeTeam": {"score": 0}},
+            ],
+            dt.date(2026, 4, 30): [
+                {"gameState": "OFF", "awayTeam": {"score": 4}, "homeTeam": {"score": 3}},
+            ],
+        }
+
+        self.assertEqual(_latest_final_game_day_from_rows(rows_by_day), dt.date(2026, 4, 30))
+
+    def test_playoff_round_is_inferred_from_nhl_game_id(self) -> None:
+        self.assertEqual(_playoff_round_from_game({"id": 2025030111, "gameType": 3}), 1)
+        self.assertEqual(_playoff_round_from_game({"id": 2025030242, "gameType": 3}), 2)
+
+    def test_playoff_series_wins_are_round_specific(self) -> None:
+        rows = [
+            {
+                "id": 2025030111,
+                "gameType": 3,
+                "gameState": "FINAL",
+                "awayTeam": {"abbrev": "BUF", "score": 4},
+                "homeTeam": {"abbrev": "BOS", "score": 3},
+            },
+            {
+                "id": 2025030211,
+                "gameType": 3,
+                "gameState": "FUT",
+                "awayTeam": {"abbrev": "MTL", "score": 0},
+                "homeTeam": {"abbrev": "BUF", "score": 0},
+            },
+            {
+                "id": 2025030212,
+                "gameType": 3,
+                "gameState": "FINAL",
+                "awayTeam": {"abbrev": "MTL", "score": 2},
+                "homeTeam": {"abbrev": "BUF", "score": 5},
+            },
+        ]
+
+        round_two = _playoff_series_wins_from_rows(rows, round_no=2)
+
+        self.assertEqual(round_two.get(("BUF", "MTL")), {"MTL": 0, "BUF": 1})
+        self.assertNotIn(("BOS", "BUF"), round_two)
 
 
 if __name__ == "__main__":

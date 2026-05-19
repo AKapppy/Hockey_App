@@ -39,7 +39,7 @@ def _playoff_matchup_ring_order(field: list[str]) -> list[str]:
 
     west = [canon_team_code(code) for code in field[:8] if canon_team_code(code)]
     east = [canon_team_code(code) for code in field[8:16] if canon_team_code(code)]
-    ordered = east[4:8] + east[:4] + west[4:8] + west[:4]
+    ordered = east[4:8] + list(reversed(east[:4])) + west[4:8] + list(reversed(west[:4]))
 
     out: list[str] = []
     seen: set[str] = set()
@@ -231,9 +231,9 @@ def render_pie_chart_tab(
         if "NYR" in metro:
             metro = ["NYR"] + [c for c in metro if c != "NYR"]
         atl = filt(DIVS_MASTER.get("Atlantic", []))
-        cen = filt(DIVS_MASTER.get("Central", []))
         pac = filt(DIVS_MASTER.get("Pacific", []))
-        return metro + atl + cen + pac
+        cen = filt(DIVS_MASTER.get("Central", []))
+        return metro + atl + pac + cen
 
     def _pie_order_for_selected_date() -> list[str]:
         selected_day = start_date + dt.timedelta(days=max(0, int(selected_col_idx)))
