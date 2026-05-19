@@ -241,6 +241,14 @@
     return teamLogo({ ...opts, code });
   }
 
+  function nhlLogo(code) {
+    return logo(code, { league: "NHL" });
+  }
+
+  function activeLeagueLogo(code) {
+    return logo(code, { league: state.league });
+  }
+
   function teamColor(code) {
     const team = byCode.get(code);
     return team ? team.color : "#888888";
@@ -348,7 +356,7 @@
 
   function renderGlobalControls() {
     const selected = state.selectedTeam;
-    const selectedImg = selected ? `<img class="button-logo" src="${esc(logo(selected))}" alt="">` : "";
+    const selectedImg = selected ? `<img class="button-logo" src="${esc(activeLeagueLogo(selected))}" alt="">` : "";
     const teamText = selected ? teamName(selected) : "Choose team";
     const season = data.metadata.season || "";
     const shortSeason = season.replace(/-(\d{2})\d{2}$/, "-$1");
@@ -702,7 +710,7 @@
             <tbody>${rows.map((row) => `
               <tr>
                 <td class="team-cell ${row.team === state.selectedTeam ? "selected-outline" : ""}" data-team="${esc(row.team)}">
-                  <div class="team-cell-inner"><img class="team-logo" src="${esc(logo(row.team))}" alt=""><span>${esc(row.team)}</span></div>
+                  <div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(row.team))}" alt=""><span>${esc(row.team)}</span></div>
                 </td>
                 ${cols.map(([key]) => renderStatCell(row[key], key, rows)).join("")}
               </tr>
@@ -741,7 +749,7 @@
             <tbody>${rows.map((row) => `
               <tr>
                 <td class="team-cell ${row.team === state.selectedTeam ? "selected-outline" : ""}" data-team="${esc(row.team)}">
-                  <div class="team-cell-inner"><img class="team-logo" src="${esc(logo(row.team))}" alt=""><span>${esc(row.team)}</span></div>
+                  <div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(row.team))}" alt=""><span>${esc(row.team)}</span></div>
                 </td>
                 ${cols.map((col) => renderOutcomeCell(row[col] || "")).join("")}
               </tr>
@@ -880,7 +888,7 @@
         <tbody>${rows.map((code) => `
           <tr>
             <td class="team-cell ${code === state.selectedTeam ? "selected-outline" : ""}" data-team="${esc(code)}">
-              <div class="team-cell-inner"><img class="team-logo" src="${esc(logo(code))}" alt=""><span>${esc(code)}</span></div>
+              <div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(code))}" alt=""><span>${esc(code)}</span></div>
             </td>
             ${cols.map((_, idx) => {
               const bg = genericHeat(payload, code, idx, allowNegative);
@@ -953,6 +961,20 @@
       out[code] = genericValue(p, code, state.modelDateIdx) || 0;
     });
     return out;
+  }
+
+  function modelSnapshot(payload, idx = state.modelDateIdx) {
+    const snapshots = (payload && payload.snapshots) || [];
+    if (!snapshots.length) return null;
+    return snapshots[Math.max(0, Math.min(idx, snapshots.length - 1))] || null;
+  }
+
+  function playoffPictureSnapshot() {
+    return modelSnapshot(desktopModels().playoffPicture);
+  }
+
+  function playoffWinProbabilitiesSnapshot() {
+    return modelSnapshot(desktopModels().playoffWinProbabilities);
   }
 
   function currentModelDay() {
@@ -1163,11 +1185,11 @@
       classes.push("is-empty");
       return `<div class="${classes.join(" ")}"></div>`;
     }
-    return `<div class="${classes.join(" ")}" data-team="${esc(code)}"><img src="${esc(logo(code))}" alt=""><span>${esc(code)}</span><strong>${esc(pts[code] || 0)}</strong></div>`;
+    return `<div class="${classes.join(" ")}" data-team="${esc(code)}"><img src="${esc(nhlLogo(code))}" alt=""><span>${esc(code)}</span><strong>${esc(pts[code] || 0)}</strong></div>`;
   }
 
-  function renderLeagueStandingsPanel(pts) {
-    const rows = sortedByPoints(teamCodes(), pts);
+  function renderLeagueStandingsPanel(pts, order = null) {
+    const rows = Array.isArray(order) && order.length ? order : sortedByPoints(teamCodes(), pts);
     return `
       <section class="league-standings-panel">
         <h3>League</h3>
@@ -1205,7 +1227,7 @@
     const winValue = Object.keys(wins || {}).length ? Number(wins[code] || 0) : "";
     return `
       <div class="bracket-team-line ${winner === code ? "is-predicted" : ""}" data-team="${esc(code)}">
-        <img src="${esc(logo(code))}" alt="">
+        <img src="${esc(nhlLogo(code))}" alt="">
         <span>${esc(code)}</span>
         <span class="series-win">${esc(winValue)}</span>
         <strong class="series-points">${esc(pts[code] || 0)}</strong>
@@ -1251,8 +1273,8 @@
     `;
   }
 
-  function renderCupColumn(westChampion, eastChampion, pts, seriesScores) {
-    const winner = pickBracketWinnerWithScores(westChampion, eastChampion, pts, seriesScores);
+  function renderCupColumn(westChampion, eastChampion, pts, seriesScores, projectedWinner = "") {
+    const winner = projectedWinner || pickBracketWinnerWithScores(westChampion, eastChampion, pts, seriesScores);
     return `
       <section class="cup-column">
         <div class="round-label">Stanley Cup Final</div>
@@ -1271,31 +1293,38 @@
   function renderPlayoffPicturePage() {
     const p = pointsPayload();
     if (!p) return renderComingSoon("Playoff Picture", "No exported points history data is available yet.");
-    const pts = pointsSnapshot();
-    const cols = playoffColumns(pts);
-    const seriesScores = playoffSeriesScoresByDay(currentModelDay());
-    const westBracket = buildConferenceBracket(conferenceBracketTeams(pts, "Central", "Pacific", "WestWC"), pts, seriesScores);
-    const eastBracket = buildConferenceBracket(conferenceBracketTeams(pts, "Atlantic", "Metro", "EastWC"), pts, seriesScores);
+    const exported = playoffPictureSnapshot();
+    const pts = (exported && exported.points) || pointsSnapshot();
+    const cols = (exported && exported.standings && exported.standings.columns) || playoffColumns(pts);
+    const leagueOrder = exported && exported.standings && exported.standings.league;
+    const seriesScores = (exported && exported.seriesScores) || playoffSeriesScoresByDay(currentModelDay());
+    const westBracket = (exported && exported.brackets && exported.brackets.west)
+      || buildConferenceBracket(conferenceBracketTeams(pts, "Central", "Pacific", "WestWC"), pts, seriesScores);
+    const eastBracket = (exported && exported.brackets && exported.brackets.east)
+      || buildConferenceBracket(conferenceBracketTeams(pts, "Atlantic", "Metro", "EastWC"), pts, seriesScores);
+    const cupFinal = exported && exported.cup && Array.isArray(exported.cup.final)
+      ? exported.cup.final
+      : [westBracket.champion, eastBracket.champion];
     return `
       <div class="model-page page-fill playoff-page">
         ${renderModelStepper()}
-        <div class="model-date">${esc(modelDayLabel())}</div>
+        <div class="model-date">${esc((exported && exported.day) || modelDayLabel())}</div>
         <div class="playoff-shell">
           <section class="playoff-stage">
             <div class="playoff-stage-header">Standings</div>
             <div class="playoff-stage-body">
-              ${renderLeagueStandingsPanel(pts)}
+              ${renderLeagueStandingsPanel(pts, leagueOrder)}
               ${renderWildcardBoard(cols, pts)}
             </div>
           </section>
           <section class="bracket-stage">
             <div class="bracket-stage-header">
               <span>Bracket</span>
-              <span class="bracket-mode-pill">NHL (Divisional)</span>
+              <span class="bracket-mode-pill">${esc((exported && exported.mode) || "NHL (Divisional)")}</span>
             </div>
             <div class="conference-grid">
               ${renderConferenceBracket("West", westBracket, pts, seriesScores, "west")}
-              ${renderCupColumn(westBracket.champion, eastBracket.champion, pts, seriesScores)}
+              ${renderCupColumn(cupFinal[0], cupFinal[1], pts, seriesScores, exported && exported.cup && exported.cup.champion)}
               ${renderConferenceBracket("East", eastBracket, pts, seriesScores, "east")}
             </div>
           </section>
@@ -1327,7 +1356,7 @@
               const cut = cutTeam ? (pts[cutTeam] || 0) : 0;
               const magic = Math.max(0, Math.ceil((cut + 1 - (pts[code] || 0)) / 2));
               const tragic = maxPts < cut + 1 ? "X" : Math.max(0, Math.ceil((maxPts - cut) / 2));
-              return `<tr><td class="team-cell" data-team="${esc(code)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(logo(code))}" alt=""><span>${esc(code)}</span></div></td><td>${esc(pts[code] || 0)}</td><td>${esc(gr)}</td><td>${esc(maxPts)}</td><td>${esc(magic === 0 ? "*" : magic)}</td><td>${esc(tragic)}</td></tr>`;
+              return `<tr><td class="team-cell" data-team="${esc(code)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(code))}" alt=""><span>${esc(code)}</span></div></td><td>${esc(pts[code] || 0)}</td><td>${esc(gr)}</td><td>${esc(maxPts)}</td><td>${esc(magic === 0 ? "*" : magic)}</td><td>${esc(tragic)}</td></tr>`;
             }).join("")}</tbody>
           </table>
         </div>
@@ -1357,7 +1386,7 @@
               const gr = Number((stats[code] || {}).gr ?? 0);
               const cur = Number(pts[code] || 0);
               const center = cur + gr;
-              return `<tr><td class="team-cell" data-team="${esc(code)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(logo(code))}" alt=""><span>${esc(code)}</span></div></td>${totals.map((n) => {
+              return `<tr><td class="team-cell" data-team="${esc(code)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(code))}" alt=""><span>${esc(code)}</span></div></td>${totals.map((n) => {
                 const prob = Math.max(0, 1 - Math.abs(n - center) / Math.max(1, gr * 2));
                 const bg = rankHeat(prob);
                 return `<td style="background:${bg};color:${textForBg(bg)}">${prob > 0 ? esc((prob * 100).toFixed(1) + "%") : ""}</td>`;
@@ -1372,6 +1401,23 @@
   function renderPlayoffWinProbabilitiesPage() {
     const p = pointsPayload();
     if (!p) return renderComingSoon("Playoff Win Probabilities", "No exported points history data is available yet.");
+    const exported = playoffWinProbabilitiesSnapshot();
+    if (exported && Array.isArray(exported.rounds) && exported.rounds.length) {
+      const rows = exported.rounds.flatMap((round) => (round.series || []).map((series) => [round.title || "", series]));
+      if (!rows.length) return renderComingSoon("Playoff Win Probabilities", "No playoff matchups are available yet.");
+      return `
+        <div class="model-page page-fill">
+          ${renderModelStepper()}
+          <div class="model-date">Playoff Win Probabilities - ${esc(exported.day || modelDayLabel())}</div>
+          <div class="table-scroll">
+            <table class="tk-table wide-table">
+              <thead><tr><th>Round</th><th>Series</th><th>Team</th><th>in 4</th><th>in 5</th><th>in 6</th><th>in 7</th><th>Prediction</th></tr></thead>
+              <tbody>${rows.map(([round, series]) => renderExportedSeriesRows(round, series)).join("")}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
     const pts = pointsSnapshot();
     const seriesScores = playoffSeriesScoresByDay(currentModelDay());
     const westBracket = buildConferenceBracket(conferenceBracketTeams(pts, "Central", "Pacific", "WestWC"), pts, seriesScores);
@@ -1397,6 +1443,26 @@
           </table>
         </div>
       </div>
+    `;
+  }
+
+  function renderExportedSeriesRows(roundLabel, series) {
+    const a = String(series.a || "");
+    const b = String(series.b || "");
+    const av = series.a_probs || [0, 0, 0, 0];
+    const bv = series.b_probs || [0, 0, 0, 0];
+    const predText = String(series.pred || "");
+    const cells = (vals) => vals.map((v) => {
+      const n = Number(v) || 0;
+      const impossible = n <= 0;
+      const styles = impossible
+        ? ' style="background:#353535;color:#9a9a9a"'
+        : "";
+      return `<td${styles}>${n > 0 ? esc((n * 100).toFixed(2) + "%") : ""}</td>`;
+    }).join("");
+    return `
+      <tr><td rowspan="2">${esc(roundLabel)}</td><td rowspan="2">${esc(a)} vs ${esc(b)}</td><td class="team-cell" data-team="${esc(a)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(a))}" alt=""><span>${esc(a)}</span></div></td>${cells(av)}<td rowspan="2">${esc(predText)}</td></tr>
+      <tr><td class="team-cell" data-team="${esc(b)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(b))}" alt=""><span>${esc(b)}</span></div></td>${cells(bv)}</tr>
     `;
   }
 
@@ -1465,8 +1531,8 @@
       return `<td${styles}>${esc((v * 100).toFixed(2) + "%")}</td>`;
     }).join("");
     return `
-      <tr><td rowspan="2">${esc(roundLabel)}</td><td rowspan="2">${esc(a)} vs ${esc(b)}</td><td class="team-cell" data-team="${esc(a)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(logo(a, { league: "NHL" }))}" alt=""><span>${esc(a)}</span></div></td>${cells(av)}<td rowspan="2">${esc(predText)}</td></tr>
-      <tr><td class="team-cell" data-team="${esc(b)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(logo(b, { league: "NHL" }))}" alt=""><span>${esc(b)}</span></div></td>${cells(bv)}</tr>
+      <tr><td rowspan="2">${esc(roundLabel)}</td><td rowspan="2">${esc(a)} vs ${esc(b)}</td><td class="team-cell" data-team="${esc(a)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(a))}" alt=""><span>${esc(a)}</span></div></td>${cells(av)}<td rowspan="2">${esc(predText)}</td></tr>
+      <tr><td class="team-cell" data-team="${esc(b)}"><div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(b))}" alt=""><span>${esc(b)}</span></div></td>${cells(bv)}</tr>
     `;
   }
 
@@ -1558,7 +1624,7 @@
           ${rows.map((code) => `
             <tr>
               <td class="team-cell ${code === state.selectedTeam ? "selected-outline" : ""}" data-team="${esc(code)}">
-                <div class="team-cell-inner"><img class="team-logo" src="${esc(logo(code))}" alt=""><span>${esc(code)}</span></div>
+                <div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(code))}" alt=""><span>${esc(code)}</span></div>
               </td>
               ${metricOrder.map((metric) => {
                 const bg = heatColor(metric, code);
@@ -1634,7 +1700,7 @@
         if (metric === "madeplayoffs" && extent > 4) {
           const point = polar(cx, cy, rIn + (rOut - rIn) * 0.62, mid);
           const dim = selected && selected !== code ? "opacity:0.35" : "";
-          logos.push(`<image href="${esc(logo(code))}" x="${point.x - 13}" y="${point.y - 13}" width="26" height="26" style="${dim}" data-team="${esc(code)}"></image>`);
+          logos.push(`<image href="${esc(nhlLogo(code))}" x="${point.x - 13}" y="${point.y - 13}" width="26" height="26" style="${dim}" data-team="${esc(code)}"></image>`);
         }
         cum += extent;
       });
@@ -1710,7 +1776,7 @@
           ${rows.map((code) => `
             <tr>
               <td class="team-cell ${code === state.selectedTeam ? "selected-outline" : ""}" data-team="${esc(code)}">
-                <div class="team-cell-inner"><img class="team-logo" src="${esc(logo(code))}" alt=""><span>${esc(code)}</span></div>
+                <div class="team-cell-inner"><img class="team-logo" src="${esc(nhlLogo(code))}" alt=""><span>${esc(code)}</span></div>
               </td>
               ${cols.map((_, idx) => {
                 const bg = heatColor(metric, code, idx);
@@ -1785,7 +1851,7 @@
     return `<div class="mini-logos">
       ${picks.map((code) => {
         const dim = state.selectedTeam && state.selectedTeam !== code;
-        return `<button class="mini-logo ${dim ? "is-dim" : ""} ${state.selectedTeam === code ? "is-selected" : ""}" data-team="${esc(code)}" title="${esc(teamName(code))}"><img src="${esc(logo(code))}" alt="${esc(code)}"></button>`;
+        return `<button class="mini-logo ${dim ? "is-dim" : ""} ${state.selectedTeam === code ? "is-selected" : ""}" data-team="${esc(code)}" title="${esc(teamName(code))}"><img src="${esc(nhlLogo(code))}" alt="${esc(code)}"></button>`;
       }).join("")}
     </div>`;
   }

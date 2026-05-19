@@ -41,7 +41,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/data.js docs/data.json docs/data-version.json docs/index.html docs/assets
+          git add docs/data.js docs/data.json docs/data-version.json docs/index.html
+          git add docs/assets/stanley_cup.png docs/assets/nhl_logos/*.png docs/assets/pwhl_logos/*.png docs/assets/iihf_logos/*.png
           if git diff --cached --quiet; then
             echo "No generated web data changes to commit."
           else

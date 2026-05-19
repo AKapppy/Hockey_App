@@ -32,6 +32,24 @@ from hockey_app.services.simulations import (
     date_from_filename,
     download_missing_simulations,
 )
+from hockey_app.ui.tabs.models_data import (
+    points_snapshot,
+    regular_season_reference_day,
+    standings_tiebreak_snapshot,
+)
+from hockey_app.ui.tabs.models_playoff_math import (
+    live_playoff_series_probabilities,
+    series_probability_table,
+    team_strength_snapshot,
+)
+from hockey_app.ui.tabs.models_playoff_picture import (
+    _bracket_snapshot,
+    _pick_bracket_winner,
+    _series_score_snapshot,
+    _sorted_codes,
+    _wildcard_columns_snapshot,
+    playoff_status_map,
+)
 
 METRICS: dict[str, str] = {
     "madeplayoffs": "madePlayoffs",
@@ -120,6 +138,17 @@ def _df_payload(df: pd.DataFrame | None) -> dict[str, Any] | None:
     }
 
 
+def _dates_for_df_columns(start: dt.date, end: dt.date, columns: list[str]) -> list[dt.date]:
+    by_label: dict[str, dt.date] = {}
+    for day in _date_range(start, end):
+        by_label.setdefault(f"{day.month}/{day.day}", day)
+    out: list[dt.date] = []
+    for idx, col in enumerate(columns):
+        fallback = start + dt.timedelta(days=idx)
+        out.append(by_label.get(str(col), fallback if fallback <= end else end))
+    return out
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, (dt.date, dt.datetime)):
         return value.isoformat()
@@ -134,6 +163,264 @@ def _jsonable(value: Any) -> Any:
             return None
         return round(float(value), 6)
     return value
+
+
+def _series_scores_json(series_scores: dict[tuple[str, str], dict[str, int]]) -> dict[str, dict[str, int]]:
+    return {
+        "|".join(sorted((str(a), str(b)))): {str(code): int(total) for code, total in wins.items()}
+        for (a, b), wins in sorted(series_scores.items())
+    }
+
+
+def _round_pairs(teams: list[str], count: int = 4) -> list[list[str]]:
+    seeded = [str(teams[idx]) if idx < len(teams) else "" for idx in range(count * 2)]
+    return [[seeded[idx], seeded[idx + 1]] for idx in range(0, len(seeded), 2)]
+
+
+def _desktop_bracket_export(
+    teams: list[str],
+    *,
+    pts: dict[str, float],
+    series_scores: dict[tuple[str, str], dict[str, int]],
+    team_strength: dict[str, float],
+    live_series_probs: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    round1 = _round_pairs(teams)
+    r1_winners = [
+        _pick_bracket_winner(a, b, pts, series_scores, team_strength, live_series_probs)
+        for a, b in round1
+    ]
+    round2 = [[r1_winners[0], r1_winners[1]], [r1_winners[2], r1_winners[3]]]
+    r2_winners = [
+        _pick_bracket_winner(a, b, pts, series_scores, team_strength, live_series_probs)
+        for a, b in round2
+    ]
+    final = [r2_winners[0], r2_winners[1]]
+    champion = _pick_bracket_winner(final[0], final[1], pts, series_scores, team_strength, live_series_probs)
+    return {
+        "round1": round1,
+        "round2": round2,
+        "final": final,
+        "champion": champion,
+    }
+
+
+def _series_table_export(
+    a: str,
+    b: str,
+    *,
+    team_strength: dict[str, float],
+    series_scores: dict[tuple[str, str], dict[str, int]],
+    live_series_probs: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not a or not b:
+        return None
+    return _jsonable(
+        series_probability_table(
+            a,
+            b,
+            team_strength=team_strength,
+            series_scores=series_scores,
+            live_series_probs=live_series_probs,
+        )
+    )
+
+
+def _pairwise_probability_export(
+    teams: list[str],
+    *,
+    team_strength: dict[str, float],
+    series_scores: dict[tuple[str, str], dict[str, int]],
+    live_series_probs: dict[tuple[str, str], dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    rows: list[dict[str, Any]] = []
+    winners: list[str] = []
+    for idx in range(0, len(teams), 2):
+        a = teams[idx] if idx < len(teams) else ""
+        b = teams[idx + 1] if idx + 1 < len(teams) else ""
+        row = _series_table_export(
+            a,
+            b,
+            team_strength=team_strength,
+            series_scores=series_scores,
+            live_series_probs=live_series_probs,
+        )
+        if row is None:
+            continue
+        rows.append(row)
+        winners.append(str(row.get("winner") or ""))
+    return rows, winners
+
+
+def _playoff_probability_rounds_export(
+    west_r1: list[str],
+    east_r1: list[str],
+    *,
+    team_strength: dict[str, float],
+    series_scores: dict[tuple[str, str], dict[str, int]],
+    live_series_probs: dict[tuple[str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rounds: list[dict[str, Any]] = []
+    r1_w, w_winners = _pairwise_probability_export(
+        west_r1,
+        team_strength=team_strength,
+        series_scores=series_scores,
+        live_series_probs=live_series_probs,
+    )
+    r1_e, e_winners = _pairwise_probability_export(
+        east_r1,
+        team_strength=team_strength,
+        series_scores=series_scores,
+        live_series_probs=live_series_probs,
+    )
+    if r1_w or r1_e:
+        rounds.append({"title": "Round 1", "series": r1_w + r1_e})
+    r2_w, w2 = _pairwise_probability_export(
+        w_winners,
+        team_strength=team_strength,
+        series_scores=series_scores,
+        live_series_probs=live_series_probs,
+    )
+    r2_e, e2 = _pairwise_probability_export(
+        e_winners,
+        team_strength=team_strength,
+        series_scores=series_scores,
+        live_series_probs=live_series_probs,
+    )
+    if r2_w or r2_e:
+        rounds.append({"title": "Round 2", "series": r2_w + r2_e})
+    cf_w, w3 = _pairwise_probability_export(
+        w2,
+        team_strength=team_strength,
+        series_scores=series_scores,
+        live_series_probs=live_series_probs,
+    )
+    cf_e, e3 = _pairwise_probability_export(
+        e2,
+        team_strength=team_strength,
+        series_scores=series_scores,
+        live_series_probs=live_series_probs,
+    )
+    if cf_w or cf_e:
+        rounds.append({"title": "Conference Finals", "series": cf_w + cf_e})
+    cup, _w4 = _pairwise_probability_export(
+        w3 + e3,
+        team_strength=team_strength,
+        series_scores=series_scores,
+        live_series_probs=live_series_probs,
+    )
+    if cup:
+        rounds.append({"title": "Stanley Cup Final", "series": cup})
+    return rounds
+
+
+def _export_playoff_models(
+    *,
+    points_df: pd.DataFrame | None,
+    start: dt.date,
+    end: dt.date,
+    league: str = "NHL",
+) -> dict[str, Any]:
+    if points_df is None or points_df.empty:
+        return {
+            "playoffPicture": {"columns": [], "snapshots": []},
+            "playoffWinProbabilities": {"columns": [], "snapshots": []},
+        }
+
+    columns = [str(col) for col in points_df.columns]
+    picture_snapshots: list[dict[str, Any] | None] = []
+    probability_snapshots: list[dict[str, Any] | None] = []
+    column_dates = _dates_for_df_columns(start, end, columns)
+    latest_idx = len(column_dates) - 1
+    for idx, day in enumerate(column_dates):
+        # Keep Actions refreshes fast: the desktop-backed tabs need the current
+        # matchup/probability source of truth, while older slider dates can use
+        # the lightweight web fallback.
+        if idx != latest_idx:
+            picture_snapshots.append(None)
+            probability_snapshots.append(None)
+            continue
+        seed_day = regular_season_reference_day(day, league=league)
+        pts = points_snapshot(points_df, seed_day)
+        if not pts:
+            picture_snapshots.append(None)
+            probability_snapshots.append(None)
+            continue
+        standings = standings_tiebreak_snapshot(seed_day) if str(league or "NHL").upper() == "NHL" else {}
+        bracket_seed = _bracket_snapshot(pts, standings)
+        series_scores = _series_score_snapshot(day, league=league)
+        team_strength = team_strength_snapshot(day, league=league)
+        live_series_probs = live_playoff_series_probabilities(day, league=league)
+        status = playoff_status_map(day, pts, standings, league=league, series_scores=series_scores)
+        west_r1 = [str(code) for code in bracket_seed.get("West_R1", []) if str(code or "").strip()]
+        east_r1 = [str(code) for code in bracket_seed.get("East_R1", []) if str(code or "").strip()]
+        west_bracket = _desktop_bracket_export(
+            west_r1,
+            pts=pts,
+            series_scores=series_scores,
+            team_strength=team_strength,
+            live_series_probs=live_series_probs,
+        )
+        east_bracket = _desktop_bracket_export(
+            east_r1,
+            pts=pts,
+            series_scores=series_scores,
+            team_strength=team_strength,
+            live_series_probs=live_series_probs,
+        )
+        picture_snapshots.append(
+            {
+                "day": day.isoformat(),
+                "seedDay": seed_day.isoformat(),
+                "mode": "NHL (Divisional)",
+                "points": {str(code): round(float(value), 4) for code, value in pts.items()},
+                "standings": {
+                    "league": _sorted_codes(list(pts.keys()), pts, standings, scope="league"),
+                    "columns": _wildcard_columns_snapshot(pts, standings),
+                    "status": status,
+                },
+                "seriesScores": _series_scores_json(series_scores),
+                "brackets": {
+                    "west": west_bracket,
+                    "east": east_bracket,
+                },
+                "cup": {
+                    "final": [west_bracket.get("champion", ""), east_bracket.get("champion", "")],
+                    "champion": _pick_bracket_winner(
+                        str(west_bracket.get("champion") or ""),
+                        str(east_bracket.get("champion") or ""),
+                        pts,
+                        series_scores,
+                        team_strength,
+                        live_series_probs,
+                    ),
+                },
+            }
+        )
+        probability_snapshots.append(
+            {
+                "day": day.isoformat(),
+                "seedDay": seed_day.isoformat(),
+                "rounds": _playoff_probability_rounds_export(
+                    west_r1,
+                    east_r1,
+                    team_strength=team_strength,
+                    series_scores=series_scores,
+                    live_series_probs=live_series_probs,
+                ),
+            }
+        )
+
+    return {
+        "playoffPicture": {
+            "columns": columns,
+            "snapshots": picture_snapshots,
+        },
+        "playoffWinProbabilities": {
+            "columns": columns,
+            "snapshots": probability_snapshots,
+        },
+    }
 
 
 def _latest_value(table: dict[str, list[float | None]], team_code: str) -> float:
@@ -458,8 +745,11 @@ def _export_team_stats(season: str, league: str) -> dict[str, Any] | None:
 
 def _export_desktop_data(season: str, start: dt.date, end: dt.date) -> dict[str, Any]:
     league = "NHL"
-    points = _df_payload(read_table_xml(season=season, lump="points_history", league=league))
-    goal_diff = _df_payload(read_table_xml(season=season, lump="goal_differential", league=league))
+    points_df = read_table_xml(season=season, lump="points_history", league=league)
+    goal_diff_df = read_table_xml(season=season, lump="goal_differential", league=league)
+    points = _df_payload(points_df)
+    goal_diff = _df_payload(goal_diff_df)
+    playoff_models = _export_playoff_models(points_df=points_df, start=start, end=end, league=league)
     return {
         "league": league,
         "scoreboard": _export_games(season, start, end),
@@ -474,6 +764,8 @@ def _export_desktop_data(season: str, start: dt.date, end: dt.date) -> dict[str,
             "points": points,
             "teamStats": _export_team_stats(season, league),
             "gameStats": _jsonable(read_game_stats_xml(season=season, league=league)),
+            "playoffPicture": playoff_models["playoffPicture"],
+            "playoffWinProbabilities": playoff_models["playoffWinProbabilities"],
         },
     }
 
