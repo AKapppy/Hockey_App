@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from hockey_app.domain.seasons import nhl_game_type, published_seasons
+from hockey_app.domain.schedules import game_identity, provider_for_game
+
 import csv
 import datetime as dt
 import html
@@ -22,7 +25,7 @@ from zoneinfo import ZoneInfo
 
 from ...data.nhl_api import NHLApi
 from ...data.paths import cache_dir
-from ...data.xml_cache import read_games_day_xml, write_games_day_xml
+from ...data.xml_cache import read_games_day_xml, read_games_populated_bounds, write_games_day_xml
 
 try:
     from PIL import Image, ImageTk  # type: ignore
@@ -1113,7 +1116,7 @@ def _is_nhl_playoff_game(game: dict[str, Any]) -> bool:
         or ""
     ).upper()
     gid = str((game or {}).get("id") or (game or {}).get("gameId") or "")
-    return game_type in {"3", "P", "PO", "PLAYOFFS"} or gid.startswith("202503")
+    return nhl_game_type({"gameType": game_type, "id": gid}) == 3
 
 
 def _completed_playoff_series_winner(series_wins: dict[str, int]) -> str:
@@ -1971,12 +1974,12 @@ def _pick_league_codes_from_discovery(
 
 def _dedupe_games(games: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[tuple] = set()
     for g in games:
         gid = str(g.get("id") or "").strip()
         a, h = _game_codes(g)
         st = str(g.get("startTimeUTC") or "").strip()
-        key = gid if gid else f"{a}|{h}|{st}"
+        key = game_identity(g) or (str(g.get("league") or "NHL"), provider_for_game(g), a, h, st)
         if key in seen:
             continue
         seen.add(key)
@@ -1989,9 +1992,9 @@ def _merge_games_by_id(primary: list[dict[str, Any]], secondary: list[dict[str, 
     Merge same-game rows from two sources, preserving primary ordering while
     filling missing fields from secondary (including nested team fields).
     """
-    sec_map: dict[str, dict[str, Any]] = {}
+    sec_map: dict[tuple, dict[str, Any]] = {}
     for g in secondary:
-        gid = str(g.get("id") or "").strip()
+        gid = game_identity(g)
         if gid:
             sec_map[gid] = g
 
@@ -2024,7 +2027,7 @@ def _merge_games_by_id(primary: list[dict[str, Any]], secondary: list[dict[str, 
 
     out: list[dict[str, Any]] = []
     for g in primary:
-        gid = str(g.get("id") or "").strip()
+        gid = game_identity(g)
         if not gid or gid not in sec_map:
             out.append(g)
             continue
@@ -2588,19 +2591,28 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
         elif boundaries.playoffs_end is not None:
             dmax = boundaries.playoffs_end
 
-    # Union-in PWHL season span so future games in non-NHL leagues are included.
-    if pwhl_api is not None:
-        pwhl_start: Optional[dt.date] = None
-        pwhl_end: Optional[dt.date] = None
+    # The slider represents playable schedule days.  The merged XML cache is the
+    # complete local schedule, while a schedule endpoint response commonly holds
+    # only one week.  Prefer its first/last populated NHL dates when available.
+    if season:
+        cached_first, cached_last = read_games_populated_bounds(season=season, league="NHL")
+        if cached_first is not None:
+            dmin = cached_first
+        if cached_last is not None:
+            dmax = cached_last
+        published = published_seasons().get(season, {})
         try:
-            pwhl_start, pwhl_end = pwhl_api.get_season_boundaries(season_probe_date, allow_network=False)
-        except Exception:
-            pwhl_start, pwhl_end = None, None
-
-        if pwhl_start is not None:
-            dmin = pwhl_start if dmin is None else min(dmin, pwhl_start)
-        if pwhl_end is not None:
-            dmax = pwhl_end if dmax is None else max(dmax, pwhl_end)
+            published_first = dt.date.fromisoformat(str(published.get("preseason")))
+        except (TypeError, ValueError):
+            published_first = None
+        try:
+            published_last = dt.date.fromisoformat(str(published.get("regular_end")))
+        except (TypeError, ValueError):
+            published_last = None
+        if published_first is not None:
+            dmin = published_first
+        if published_last is not None:
+            dmax = published_last if dmax is None else max(dmax, published_last)
 
     # Safe fallback if endpoint shape/network isn't available.
     if dmin is None:
@@ -4186,7 +4198,9 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             div = str(row.get("divisionAbbrev") or "").strip().upper()
             points = _to_int(row.get("points") or 0, default=0)
             gp = _to_int(row.get("gamesPlayed") or 0, default=0)
-            pace = (float(points) * 82.0 / float(gp)) if gp > 0 else None
+            from hockey_app.domain.seasons import games_per_team, resolve_season
+            season_length = games_per_team("NHL", resolve_season().season)
+            pace = (float(points) * season_length / float(gp)) if gp > 0 and season_length is not None else None
             item = {
                 "team": code,
                 "conference": conf,
@@ -7197,7 +7211,7 @@ def build_games_tab(parent: tk.Widget, ctx: dict[str, Any]) -> ttk.Frame:
             gid = _to_int(row.get("id") or row.get("gameId") or 0, default=0)
             if gid <= 0:
                 continue
-            if league_txt == "NHL" or str(gid).startswith(("2024", "2025", "2026")):
+            if league_txt == "NHL" or nhl_game_type({"id": gid}) is not None:
                 out.add(gid)
         return out
 

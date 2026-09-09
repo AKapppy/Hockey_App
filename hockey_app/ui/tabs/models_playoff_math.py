@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hockey_app.domain.seasons import nhl_game_type
+
 import csv
 import datetime as dt
 import io
@@ -233,7 +235,7 @@ def live_playoff_series_probabilities(
             continue
         game_type = str(row.get("game_type") or "").upper()
         gid = str(row.get("id") or "")
-        if game_type not in {"3", "P"} and not gid.startswith("202503"):
+        if nhl_game_type({"gameType": game_type, "id": gid}) != 3:
             continue
         away = str(row.get("away_code") or "").upper()
         home = str(row.get("home_code") or "").upper()
@@ -285,7 +287,7 @@ def team_strength_snapshot(day: dt.date, *, league: str = "NHL") -> dict[str, fl
         status = str(row.get("status_text") or "").upper()
         ot_or_so = ("OT" in status) or ("SO" in status)
         game_type = str(row.get("game_type") or "").upper()
-        is_regular = game_type in {"2", "R"} or str(gid).startswith("202502")
+        is_regular = nhl_game_type({"gameType": game_type, "id": gid}) == 2
 
         away_win = away_score > home_score
         home_win = home_score > away_score

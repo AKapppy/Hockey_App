@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 import datetime as dt
 import json
 import shutil
@@ -19,6 +21,7 @@ from hockey_app.data.paths import nhl_dir
 from hockey_app.data.xml_cache import (
     read_game_stats_xml,
     read_games_day_xml,
+    read_games_cache_manifest,
     read_player_stats_xml,
     read_table_xml,
     read_team_stats_xml,
@@ -26,7 +29,9 @@ from hockey_app.data.xml_cache import (
     write_table_xml,
 )
 from hockey_app.domain.colors import build_team_color_map, theme_adjusted_line_color
-from hockey_app.domain.teams import TEAM_NAMES, TEAM_TO_CONF, TEAM_TO_DIV, canon_team_code
+from hockey_app.domain.teams import TEAM_NAMES, TEAM_TO_CONF, TEAM_TO_DIV, canon_team_code, team_registry
+from hockey_app.domain.seasons import games_per_team, nhl_game_type, BOUNDS, published_seasons
+from hockey_app.domain.schedules import provider_for_game, same_cross_provider_game
 from hockey_app.services.simulations import (
     compile_probability_tables,
     date_from_filename,
@@ -81,17 +86,13 @@ DATA_SCRIPT_RE = re.compile(r'<script\s+src="data\.js(?:\?v=[^"]*)?"></script>')
 
 
 def _default_season(today: dt.date | None = None) -> str:
-    d = today or dt.date.today()
-    y0 = d.year if d.month >= 10 else d.year - 1
-    return f"{y0}-{y0 + 1}"
+    from hockey_app.domain.seasons import resolve_season
+    return resolve_season(today).season
 
 
 def _season_start(season: str) -> dt.date:
-    try:
-        y0 = int(str(season).split("-", 1)[0])
-    except Exception:
-        y0 = dt.date.today().year
-    return dt.date(y0, 10, 1)
+    from hockey_app.domain.seasons import season_start
+    return season_start(season)
 
 
 def _parse_date(value: str | None) -> dt.date | None:
@@ -453,7 +454,7 @@ def _is_regular_nhl_game(game: dict[str, Any]) -> bool:
     gid = str(game.get("id") or game.get("gameId") or "")
     if game_type:
         return game_type in {"2", "R", "REG", "REGULAR"}
-    return not (len(gid) >= 6 and gid[4:6] == "03")
+    return nhl_game_type({"id": gid}) == 2
 
 
 def _team_code(team_obj: dict[str, Any]) -> str:
@@ -476,7 +477,7 @@ def _game_identity(game: dict[str, Any]) -> tuple[str, str, str, str]:
     home = _team_code(game.get("homeTeam") if isinstance(game.get("homeTeam"), dict) else {})
     league = str(game.get("league") or "NHL").upper().strip()
     if gid and gid != "0":
-        return (league, gid, "", "")
+        return (league, provider_for_game(game), gid, "")
     return (league, "", away, home)
 
 
@@ -488,6 +489,8 @@ def _merge_game_rows(*row_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if not isinstance(row, dict):
                 continue
             key = _game_identity(row)
+            if key not in merged and any(same_cross_provider_game(value, row) for value in merged.values()):
+                continue
             if key not in merged:
                 merged[key] = dict(row)
                 order.append(key)
@@ -499,10 +502,10 @@ def _merge_game_rows(*row_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if isinstance(v, dict) and isinstance(cur.get(k), dict):
                     child = dict(cur[k])
                     for ck, cv in v.items():
-                        if cv not in (None, "", [], {}):
+                        if cv not in (None, "", [], {}) and child.get(ck) in (None, "", [], {}):
                             child[ck] = cv
                     cur[k] = child
-                else:
+                elif cur.get(k) in (None, "", [], {}):
                     cur[k] = v
             merged[key] = cur
     return [merged[key] for key in order]
@@ -581,6 +584,8 @@ def _espn_external_games(api: ESPNApi, day: dt.date) -> list[dict[str, Any]]:
     # ESPN all-hockey can miss lower-profile leagues. Probe the known slugs used
     # by the desktop Games tab and merge whichever ones are live.
     probes = (
+        ("olympics-mens-ice-hockey", "Olympics", True),
+        ("olympics-womens-ice-hockey", "Olympics", True),
         ("olympics", "Olympics", True),
         ("olympics-hockey", "Olympics", True),
         ("olympic-hockey", "Olympics", True),
@@ -594,7 +599,11 @@ def _espn_external_games(api: ESPNApi, day: dt.date) -> list[dict[str, Any]]:
         except Exception:
             continue
         if isinstance(probe_payload, dict):
-            out.extend(_convert_espn_events(probe_payload, league_label=label, include_round_text=include_round))
+            converted = _convert_espn_events(probe_payload, league_label=label, include_round_text=include_round)
+            if slug in {"olympics-mens-ice-hockey", "olympics-womens-ice-hockey"}:
+                for game in converted:
+                    game["olympicsDivision"] = "Women" if "womens" in slug else "Men"
+            out.extend(converted)
     return _merge_game_rows(out)
 
 
@@ -603,41 +612,78 @@ def _refresh_desktop_xml_data(*, season: str, start: dt.date, end: dt.date) -> N
     pwhl_api = PWHLApi(DiskCache(pwhl_dir(season)))
     espn_api = ESPNApi(DiskCache(espn_dir(season)))
     fetched_days: list[tuple[dt.date, list[dict[str, Any]]]] = []
-    for day in _date_range(start, end):
+    # The official schedule includes future games; score/today is not a season schedule.
+    from hockey_app.domain.seasons import BOUNDS
+    # Probe through the normal postseason window so newly published playoff
+    # games extend the scoreboard without requiring a code/config change.
+    season_end_year = int(season.split("-", 1)[1])
+    probe_end = dt.date(season_end_year, 6, 30)
+    scheduled = {}
+    for probe in _date_range(start, probe_end):
+        if (probe - start).days % 7:
+            continue
+        try:
+            week = api.schedule_by_date(probe)
+            for bucket in week.get("gameWeek", []):
+                scheduled[dt.date.fromisoformat(bucket["date"])] = bucket.get("games", [])
+        except Exception as exc:
+            print(f"WARNING: NHL schedule refresh failed for {probe}: {exc}")
+    published_days = sorted(day for day, rows in scheduled.items() if rows)
+    bound = published_seasons().get(season, {}).get("regular_end")
+    fallback_end = dt.date.fromisoformat(bound) if bound else end
+    schedule_end = max([end, fallback_end, *published_days])
+    regular = {str(g.get("id")): {**g, "date": day.isoformat()} for day, rows in scheduled.items()
+               for g in rows if nhl_game_type(g) == 2}
+    expected = games_per_team("NHL", season)
+    if expected and len(regular) == expected * 16:
+        # Save only a complete, balanced official schedule as season metadata.
+        games_per_team("NHL", season, schedule=list(regular.values()), complete=True)
+        from hockey_app.data.paths import cache_dir
+        metadata_path = cache_dir() / "meta" / "published_seasons.json"
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        records = published_seasons()
+        preseason_days = [day.isoformat() for day, rows in scheduled.items() if any(nhl_game_type(g) == 1 for g in rows)]
+        records[season] = {"preseason": min(preseason_days) if preseason_days else min(g["date"] for g in regular.values()),
+                           "regular": min(g["date"] for g in regular.values()),
+                           "regular_end": max(g["date"] for g in regular.values()), "source": "NHL schedule"}
+        metadata_path.write_text(json.dumps(records, sort_keys=True) + "\n")
+    for day in _date_range(start, schedule_end):
         existing = read_games_day_xml(season=season, day=day)
+        official_ok = day in scheduled
+        nhl_games = scheduled.get(day, [])
+        if day <= dt.date.today():
+            try:
+                payload = api.score(day, force_network=(day >= dt.date.today()))
+                if isinstance(payload.get("games"), list):
+                    nhl_games = payload["games"]
+                    official_ok = True
+            except Exception as exc:
+                print(f"WARNING: NHL scores unavailable for {day}: {exc}")
+        prepared_nhl = [{**g, "league": "NHL", "provider": "NHL"} for g in nhl_games if isinstance(g, dict)]
+        pwhl_games = []
+        pwhl_ok = False
         try:
-            payload = api.score(day, force_network=(day >= dt.date.today()))
-        except Exception:
-            payload = {}
-        nhl_games = [g for g in list(payload.get("games") or []) if isinstance(g, dict)]
-        prepared_nhl: list[dict[str, Any]] = []
-        if nhl_games:
-            for game in nhl_games:
-                cur = dict(game)
-                cur["league"] = "NHL"
-                prepared_nhl.append(cur)
-
-        pwhl_games: list[dict[str, Any]] = []
-        try:
-            pwhl_games = pwhl_api.get_games_for_date(day, allow_network=True, force_network=(day >= dt.date.today()))
+            pwhl_games = pwhl_api.get_games_for_date(day, allow_network=True)
+            pwhl_ok = bool(getattr(pwhl_api, "season_diagnostics", {}).get("id"))
+            pwhl_games = [{**g, "provider": "PWHL", "league": "PWHL"} for g in pwhl_games]
         except Exception as exc:
-            print(f"WARNING: PWHL refresh failed for {day.isoformat()}: {exc}")
-
-        external_games: list[dict[str, Any]] = []
-        try:
-            external_games = _espn_external_games(espn_api, day)
-        except Exception as exc:
-            print(f"WARNING: ESPN hockey refresh failed for {day.isoformat()}: {exc}")
-
-        games = _merge_game_rows(prepared_nhl, pwhl_games, external_games, existing)
-        if games:
-            prepared: list[dict[str, Any]] = []
-            for game in games:
-                cur = dict(game)
-                cur["league"] = cur.get("league") or "NHL"
-                prepared.append(cur)
-            write_games_day_xml(season=season, day=day, games=prepared)
-        fetched_days.append((day, prepared_nhl))
+            print(f"WARNING: PWHL refresh failed for {day}: {exc}")
+        external_games = []
+        # ESPN supplements Olympic hockey; never replace official PWHL data.
+        if dt.date(2026, 2, 5) <= day <= dt.date(2026, 2, 22):
+            try:
+                external_games = [{**g, "provider": "ESPN"} for g in _espn_external_games(espn_api, day)
+                                  if str(g.get("league", "")).upper() != "PWHL"]
+            except Exception as exc:
+                print(f"WARNING: ESPN hockey refresh failed for {day}: {exc}")
+        fallback = [g for g in existing if not (
+            (str(g.get("league") or "NHL").upper() == "NHL" and official_ok) or
+            (str(g.get("league") or "").upper() == "PWHL" and pwhl_ok))]
+        games = _merge_game_rows(prepared_nhl, pwhl_games, external_games, fallback)
+        if games or official_ok or pwhl_ok:
+            write_games_day_xml(season=season, day=day, games=games)
+        if day <= end:
+            fetched_days.append((day, prepared_nhl))
 
     if not fetched_days:
         return
@@ -665,9 +711,11 @@ def _refresh_desktop_xml_data(*, season: str, start: dt.date, end: dt.date) -> N
 def _export_games(season: str, start: dt.date, end: dt.date) -> dict[str, Any]:
     days: dict[str, list[dict[str, Any]]] = {}
     latest_day = ""
+    manifest = read_games_cache_manifest(season=season)
+    cached_days = set(manifest["days"])
     for day in _date_range(start, end):
         rows = read_games_day_xml(season=season, day=day)
-        if not rows:
+        if not rows and day.isoformat() not in cached_days:
             continue
         slim_rows: list[dict[str, Any]] = []
         for game in rows:
@@ -689,6 +737,7 @@ def _export_games(season: str, start: dt.date, end: dt.date) -> dict[str, Any]:
                     "gameTypeCode": game.get("gameTypeCode") or "",
                     "playoffRound": game.get("playoffRound") or game.get("round"),
                     "league": game.get("league") or "NHL",
+                    "provider": game.get("provider") or game.get("league") or "NHL",
                     "state": str(game.get("gameState") or "").upper(),
                     "status": game.get("statusText") or "",
                     "clock": {
@@ -702,6 +751,7 @@ def _export_games(season: str, start: dt.date, end: dt.date) -> dict[str, Any]:
                     "stage": game.get("displayStage") or "",
                     "division": game.get("olympicsDivision") or "",
                     "startUtc": game.get("startTimeUTC") or "",
+                    "venue": game.get("venue") or {},
                     "away": {
                         "code": str(away.get("abbrev") or "").upper(),
                         "name": ((away.get("name") or {}).get("default") if isinstance(away.get("name"), dict) else away.get("name")) or "",
@@ -719,7 +769,7 @@ def _export_games(season: str, start: dt.date, end: dt.date) -> dict[str, Any]:
         iso = day.isoformat()
         days[iso] = slim_rows
         latest_day = iso
-    return {"days": days, "latestDay": latest_day}
+    return {"days": days, "latestDay": latest_day, "updatedAt": manifest.get("updatedAt")}
 
 
 def _export_team_stats(season: str, league: str) -> dict[str, Any] | None:
@@ -796,7 +846,7 @@ def _web_game_identity(game: dict[str, Any]) -> tuple[str, str, str, str]:
     away_code = str(away.get("code") or "").upper().strip()
     home_code = str(home.get("code") or "").upper().strip()
     if gid and gid != "0":
-        return (league, gid, "", "")
+        return (league, provider_for_game(game), gid, "")
     return (league, "", away_code, home_code)
 
 
@@ -812,6 +862,7 @@ def _preserve_existing_external_web_games(payload: dict[str, Any], existing: dic
     if not isinstance(target_days, dict) or not isinstance(source_days, dict):
         return
 
+    all_seen = {_web_game_identity(g) for rows in target_days.values() for g in rows if isinstance(g, dict)}
     for day, source_games in source_days.items():
         if not isinstance(source_games, list):
             continue
@@ -830,7 +881,7 @@ def _preserve_existing_external_web_games(payload: dict[str, Any], existing: dic
             if league == "NHL":
                 continue
             key = _web_game_identity(game)
-            if key in seen:
+            if key in seen or key in all_seen:
                 continue
             target_games.append(game)
             seen.add(key)
@@ -896,15 +947,13 @@ def build_payload(
     end: dt.date,
     simulations_dir: Path,
 ) -> dict[str, Any]:
-    tables = compile_probability_tables(
-        simulations_dir,
-        start,
-        end,
-        metrics=METRICS,
-        canon_team_code=canon_team_code,
-    )
-    if not tables or all(df.empty for df in tables.values()):
-        raise SystemExit(f"No simulation data found in {simulations_dir}")
+    prediction_error = None
+    try:
+        tables = compile_probability_tables(simulations_dir, start, end, metrics=METRICS, canon_team_code=canon_team_code)
+    except Exception as exc:
+        tables = {}
+        prediction_error = str(exc)
+    prediction_status = "available" if any(not frame.empty and frame.notna().any().any() for frame in tables.values()) else "unavailable"
 
     table_payload: dict[str, dict[str, Any]] = {}
     all_codes: set[str] = set()
@@ -936,24 +985,70 @@ def build_payload(
     # Desktop-backed tabs should export the same current cache range the desktop
     # app can render, not just the span covered by simulation CSVs.
     desktop_start = _season_start(season)
-    desktop_end = max(end, dt.date.today())
+    from hockey_app.domain.seasons import BOUNDS
+    published_end = published_seasons().get(season, {}).get("regular_end")
+    manifest_days = read_games_cache_manifest(season=season).get("days") or []
+    cached_end = max((dt.date.fromisoformat(day) for day in manifest_days), default=end)
+    desktop_end = max(end, cached_end, dt.date.fromisoformat(published_end) if published_end else end)
 
+    desktop_payload = _export_desktop_data(season, desktop_start, desktop_end)
+    pwhl_available = any(str(g.get("league", "")).upper() == "PWHL" for rows in desktop_payload.get("scoreboard", {}).get("days", {}).values() for g in rows)
+    pwhl_provider = PWHLApi(DiskCache(pwhl_dir(season)))
+    pwhl_provider._pick_season_id(dt.date(int(season[:4]) + 1, 1, 15), allow_network=False)
     return {
         "metadata": {
             "season": season,
             "startDate": start.isoformat(),
             "endDate": end.isoformat(),
             "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-            "source": "MoneyPuck simulations",
+            "source": "NHL / PWHL / ESPN; optional MoneyPuck predictions",
+            "scheduleGeneratedAt": desktop_payload.get("scoreboard", {}).get("updatedAt"),
+            "pwhlSeason": pwhl_provider.season_diagnostics,
+            "pwhlSchedule": "available" if pwhl_available else "unpublished" if season == "2026-2027" else "unavailable",
+            "predictions": {"status": prediction_status, "error": prediction_error},
         },
         "metrics": [
             {"key": key, "label": METRIC_LABELS[key], "title": METRIC_TITLES[key]}
             for key in METRICS
         ],
+        "teamRegistry": team_registry(season),
+        "seasonRules": {league: games_per_team(league, season) for league in ("NHL", "PWHL")},
         "teams": team_rows,
         "tables": table_payload,
-        "desktop": _export_desktop_data(season, desktop_start, desktop_end),
+        "desktop": desktop_payload,
     }
+
+
+def _prepare_season_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade older tracked exports enough for the current static client."""
+    season = str((payload.get("metadata") or {}).get("season") or "")
+    if not season:
+        return payload
+    payload = dict(payload)
+    metadata = dict(payload.get("metadata") or {})
+    metadata.setdefault("predictions", {"status": "available" if payload.get("tables") else "unavailable", "error": None})
+    payload["metadata"] = metadata
+    payload.setdefault("teamRegistry", team_registry(season))
+    payload.setdefault("seasonRules", {league: games_per_team(league, season) for league in ("NHL", "PWHL")})
+    return payload
+
+
+def _write_season_archives(out_dir: Path, payloads: list[dict[str, Any]]) -> list[str]:
+    by_season: dict[str, dict[str, Any]] = {}
+    for raw in payloads:
+        payload = _prepare_season_payload(raw)
+        season = str((payload.get("metadata") or {}).get("season") or "")
+        if season:
+            by_season[season] = payload
+    seasons = sorted(by_season, reverse=True)
+    for payload in by_season.values():
+        payload["metadata"]["availableSeasons"] = seasons
+    for season, payload in by_season.items():
+        path = out_dir / "seasons" / season / "data.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    (out_dir / "season-index.json").write_text(json.dumps({"seasons": seasons}, separators=(",", ":")) + "\n", encoding="utf-8")
+    return seasons
 
 
 def export_web(
@@ -965,20 +1060,17 @@ def export_web(
     refresh: bool,
 ) -> Path:
     simulations_dir = sims_dir(season)
+    errors = []
     if refresh:
         refresh_start = start or _season_start(season)
         refresh_end = end or dt.date.today()
-        errors = download_missing_simulations(
-            refresh_start,
-            refresh_end,
-            simulations_dir,
-            headers=HEADERS,
-            ensure_dir_writable=_ensure_writable,
-            index_url=URL_SIMULATIONS,
-        )
+        try:
+            errors = download_missing_simulations(refresh_start, refresh_end, simulations_dir,
+                headers=HEADERS, ensure_dir_writable=_ensure_writable, index_url=URL_SIMULATIONS)
+        except Exception as exc:
+            errors = [str(exc)]
         if errors:
-            joined = "\n".join(f"- {msg}" for msg in errors)
-            raise SystemExit(f"Failed to refresh simulations:\n{joined}")
+            print("MoneyPuck provider warning: " + "; ".join(errors))
         _refresh_desktop_xml_data(
             season=season,
             start=_season_start(season),
@@ -986,32 +1078,41 @@ def export_web(
         )
 
     dates = _csv_dates(simulations_dir)
-    if not dates:
-        raise SystemExit(
-            f"No cached simulations found in {simulations_dir}. "
-            "Run again with --refresh to download them."
-        )
-
-    export_start = start or dates[0]
-    export_end = end or dates[-1]
+    export_start = start or (dates[0] if dates else _season_start(season))
+    export_end = end or (dates[-1] if dates else max(export_start, dt.date.today()))
     payload = build_payload(
         season=season,
         start=export_start,
         end=export_end,
         simulations_dir=simulations_dir,
     )
+    if errors:
+        payload["metadata"]["predictions"]["status"] = "stale" if payload.get("teams") else "unavailable"
+        payload["metadata"]["predictions"]["error"] = "; ".join(errors)
     existing = _read_existing_payload(out_dir)
-    if existing and not _has_desktop_data(payload) and _has_desktop_data(existing):
+    if existing and existing.get("metadata", {}).get("season") == season and not _has_desktop_data(payload) and _has_desktop_data(existing):
         payload["desktop"] = existing["desktop"]
+        payload["metadata"]["scheduleStatus"] = "stale"
+        payload["metadata"]["scheduleGeneratedAt"] = existing.get("metadata", {}).get("generatedAt")
     else:
-        _preserve_existing_external_web_games(payload, existing)
+        if existing and existing.get("metadata", {}).get("season") == season:
+            _preserve_existing_external_web_games(payload, existing)
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    archive_payloads = [payload]
+    if existing and existing.get("metadata", {}).get("season") != season:
+        archive_payloads.append(existing)
+    seasons = _write_season_archives(out_dir, archive_payloads)
+    payload["metadata"]["availableSeasons"] = seasons
+
+    from hockey_app.tools.validate_web import validate
+    print(json.dumps(validate(payload), ensure_ascii=False))
     _copy_logo_assets(out_dir)
     data_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     (out_dir / "data.json").write_text(data_json + "\n", encoding="utf-8")
+    initial = {**payload, "tables": {}, "desktop": {"league": "NHL", "scoreboard": payload.get("desktop", {}).get("scoreboard", {})}, "detailsUrl": "data.json"}
     (out_dir / "data.js").write_text(
-        "window.HOCKEY_APP_DATA = " + data_json + ";\n",
+        "window.HOCKEY_APP_DATA = " + json.dumps(initial, ensure_ascii=False, separators=(",", ":")) + ";\n",
         encoding="utf-8",
     )
     _write_data_version(out_dir, str(payload.get("metadata", {}).get("generatedAt") or ""))
@@ -1026,6 +1127,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--end", help="Optional export end date, YYYY-MM-DD.")
     parser.add_argument("--refresh", action="store_true", help="Download missing simulation CSVs first.")
     args = parser.parse_args(argv)
+    from hockey_app.domain.seasons import normalize_season
+    normalized = normalize_season(args.season)
+    if normalized is None:
+        parser.error("Invalid season")
+    # Desktop model modules bind the selected season at import. Start the CLI
+    # with the requested season before those imports when exporting history.
+    if argv is None and os.environ.get("HOCKEY_SEASON") != normalized:
+        os.environ["HOCKEY_SEASON"] = normalized
+        os.execv(sys.executable, [sys.executable, "-m", "hockey_app.tools.export_web", *sys.argv[1:]])
+    args.season = normalized
 
     data_path = export_web(
         out_dir=Path(args.out),

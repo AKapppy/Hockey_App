@@ -15,7 +15,7 @@ TEAM_NAMES: dict[str, str] = {
     "FLA": "Florida Panthers",
     "LAK": "Los Angeles Kings",
     "MIN": "Minnesota Wild",
-    "MTL": "Montreal Canadiens",
+    "MTL": "Montréal Canadiens",
     "NJD": "New Jersey Devils",
     "NSH": "Nashville Predators",
     "NYI": "New York Islanders",
@@ -68,3 +68,57 @@ def division_columns_for_codes(codes: set[str]) -> dict[str, list[str]]:
         present.sort(key=lambda c: (TEAM_NAMES.get(c, c), c))
         out[div] = present
     return out
+
+PWHL_BASE_NAMES = {
+    "BOS": "Boston Fleet", "MIN": "Minnesota Frost", "MTL": "Montréal Victoire",
+    "NY": "New York Sirens", "OTT": "Ottawa Charge", "TOR": "Toronto Sceptres",
+    "SEA": "Seattle Torrent", "VAN": "Vancouver Goldeneyes",
+}
+PWHL_EXPANSION_NAMES = {"DET": "PWHL Detroit", "HAM": "PWHL Hamilton", "LV": "PWHL Las Vegas", "SJ": "PWHL San Jose"}
+
+def pwhl_team_names(season=None):
+    from hockey_app.domain.seasons import resolve_season, normalize_season
+    key = normalize_season(season) if season else resolve_season().season
+    names = dict(PWHL_BASE_NAMES)
+    if key and int(key[:4]) >= 2026:
+        names.update(PWHL_EXPANSION_NAMES)
+    if key and int(key[:4]) < 2025:
+        names.pop("SEA", None)
+        names.pop("VAN", None)
+    return names
+
+NHL_PROVIDER_IDS = {'ANA': 24, 'BOS': 6, 'BUF': 7, 'CAR': 12, 'CBJ': 29, 'CGY': 20, 'CHI': 16, 'COL': 21, 'DAL': 25, 'DET': 17, 'EDM': 22, 'FLA': 13, 'LAK': 26, 'MIN': 30, 'MTL': 8, 'NJD': 1, 'NSH': 18, 'NYI': 2, 'NYR': 3, 'OTT': 9, 'PHI': 4, 'PIT': 5, 'SEA': 55, 'SJS': 28, 'STL': 19, 'TBL': 14, 'TOR': 10, 'UTA': 68, 'VAN': 23, 'VGK': 54, 'WPG': 52, 'WSH': 15}
+
+def team_registry(season):
+    rows = []
+    for league, names in (("NHL", TEAM_NAMES), ("PWHL", pwhl_team_names(season))):
+        for code, name in names.items():
+            provisional = league == "PWHL" and code in PWHL_EXPANSION_NAMES
+            rows.append({"league": league, "code": code, "name": name,
+                         "aliases": [name.replace("Montréal", "Montreal"), *PWHL_PROVIDER_ALIASES.get(code, ())] if league == "PWHL" else [name.replace("Montréal", "Montreal")],
+                         "providerId": NHL_PROVIDER_IDS.get(code) if league == "NHL" else None, "providerCode": code if not provisional else None,
+                         "activeSeason": season, "provisionalBrand": provisional,
+                         "logo": None if provisional else f"assets/{league.lower()}_logos/{code}.png"})
+    return rows
+
+
+PWHL_PROVIDER_ALIASES = {
+    "BOS": ("Boston", "Fleet"), "MIN": ("Minnesota", "Frost"),
+    "MTL": ("Montreal", "Montréal", "Victoire", "MON"),
+    "NY": ("New York", "Sirens", "NYC"), "OTT": ("Ottawa", "Charge"),
+    "TOR": ("Toronto", "Sceptres"), "SEA": ("Seattle", "Torrent"),
+    "VAN": ("Vancouver", "Goldeneyes"), "DET": ("Detroit",),
+    "HAM": ("Hamilton",), "LV": ("Las Vegas",), "SJ": ("San Jose",),
+}
+
+
+def pwhl_code(value):
+    import re
+    import unicodedata
+    def folded(text):
+        return unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode().upper()
+    text = folded(value)
+    for code, aliases in PWHL_PROVIDER_ALIASES.items():
+        if text == code or any(re.search(r"\b" + re.escape(folded(alias)) + r"\b", text) for alias in aliases):
+            return code
+    return "TBD"

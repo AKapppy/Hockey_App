@@ -22,16 +22,8 @@ PHASE_LABEL = {
     "postseason": "Postseason",
 }
 
-PWHL_NAMES: dict[str, str] = {
-    "BOS": "Boston Fleet",
-    "MIN": "Minnesota Frost",
-    "MTL": "Montreal Victoire",
-    "NY": "New York Sirens",
-    "OTT": "Ottawa Charge",
-    "TOR": "Toronto Sceptres",
-    "VAN": "Vancouver",
-    "SEA": "Seattle",
-}
+from hockey_app.domain.teams import pwhl_team_names
+PWHL_NAMES = pwhl_team_names()
 
 PWHL_LOGOS_DIR = Path(__file__).resolve().parents[2] / "assets" / "pwhl_logos"
 PWHL_CODE_ALIASES: dict[str, str] = {"MON": "MTL", "NYC": "NY"}
@@ -455,7 +447,8 @@ def _compute_phase_rows(
     teams = _team_order(league)
     out: dict[str, dict[str, Any]] = {}
     league_u = str(league).upper()
-    season_games = 30 if league_u == "PWHL" else 82
+    from hockey_app.domain.seasons import games_per_team
+    season_games = games_per_team(league_u, SEASON)
 
     for ph in PHASES:
         if ph not in phase_ranges:
@@ -489,11 +482,11 @@ def _compute_phase_rows(
                 gf = int(s["gf"])
                 ga = int(s["ga"])
                 gd = int(s["gd"])
-                gr = max(0, season_games - gp)
+                gr = max(0, season_games - gp) if season_games is not None else None
                 max_ppg = 3.0 if league_u == "PWHL" else 2.0
                 p_pct = (float(pts) / (float(gp) * max_ppg)) if gp > 0 else 0.0
                 w_pct = (float(w) / float(gp)) if gp > 0 else 0.0
-                mxp = pts + gr * (3 if league_u == "PWHL" else 2)
+                mxp = pts + gr * (3 if league_u == "PWHL" else 2) if gr is not None else None
 
                 rows.append(
                     {

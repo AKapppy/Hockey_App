@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 from hockey_app.ui.tabs.models_playoff_math import series_probability_table
@@ -124,7 +125,8 @@ class PlayoffBracketSnapshotTests(unittest.TestCase):
 
         self.assertEqual(winner, "BOS")
 
-    def test_playoff_status_map_marks_finished_series_loser_eliminated(self) -> None:
+    @patch("hockey_app.ui.tabs.models_playoff_picture.regular_season_reference_day", return_value=dt.date(2026, 4, 16))
+    def test_playoff_status_map_marks_finished_series_loser_eliminated(self, _reference_day) -> None:
         statuses = playoff_status_map(
             dt.date(2026, 4, 25),
             {"BOS": 110.0, "OTT": 95.0},

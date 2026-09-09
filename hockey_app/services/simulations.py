@@ -168,7 +168,7 @@ def compile_probability_tables(
         table = pd.DataFrame(index=idx, columns=columns, dtype="float64")
         for (team, d), v in values[out_key].items():
             table.loc[team, date_to_col[d]] = v
-        table = table.ffill(axis=1).bfill(axis=1)
+        table = table.ffill(axis=1)
         tables[out_key] = table
 
     return tables

@@ -12,34 +12,13 @@ from hockey_app.data.xml_cache import ensure_season_xml_scaffold
 # Season / dates
 # ----------------------------
 def _default_season_for_today(today: dt.date | None = None) -> str:
-    d = today or dt.date.today()
-    # NHL season typically starts in October.
-    # Jul-Sep uses the most recently completed season rather than the upcoming one.
-    if d.month >= 10:
-        y0 = d.year
-    else:
-        y0 = d.year - 1
-    return f"{y0}-{y0 + 1}"
+    from hockey_app.domain.seasons import resolve_season
+    return resolve_season(today).season
 
 
 def _normalize_season_text(value: str) -> str | None:
-    s = str(value or "").strip()
-    m = re.fullmatch(r"(\d{4})-(\d{2}|\d{4})", s)
-    if not m:
-        return None
-    y0 = int(m.group(1))
-    y1_raw = m.group(2)
-    if len(y1_raw) == 2:
-        yy = int(y1_raw)
-        century = (y0 // 100) * 100
-        y1 = century + yy
-        if y1 < y0:
-            y1 += 100
-    else:
-        y1 = int(y1_raw)
-    if y1 < y0:
-        return None
-    return f"{y0}-{y1}"
+    from hockey_app.domain.seasons import normalize_season
+    return normalize_season(value)
 
 
 def _season_from_env_or_default() -> str:
@@ -51,7 +30,7 @@ def _season_from_env_or_default() -> str:
 
 
 def _project_season_dates_csv() -> Path:
-    p = Path(__file__).resolve().parents[1] / "cache" / "season_dates.csv"
+    p = cache_dir() / "season_dates.csv"
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -207,6 +186,8 @@ def _resolve_season_bounds_cached(
             cached_end = _parse_iso_date(end_cache_file.read_text(encoding="utf-8").strip())
     except Exception:
         pass
+    if cached_start is not None:
+        cached_start = min(cached_start, fallback_start)
     if cached_start is not None and cached_end is not None:
         # Historical seasons should include full postseason range.
         if historical_season and cached_end < fallback_end:
@@ -225,7 +206,7 @@ def _resolve_season_bounds_cached(
     resolved_end = cached_end
     try:
         payloads: list[object] = []
-        for url in endpoints:
+        for url in (endpoints if os.environ.get("HOCKEY_ALLOW_METADATA_NETWORK") == "1" else ()):
             r = requests.get(
                 url,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; HockeyApp/1.0)"},
@@ -286,11 +267,8 @@ def _resolve_season_bounds_cached(
 
 
 def _season_start_fallback(season: str) -> dt.date:
-    y0, _y1 = _season_years(season)
-    if isinstance(y0, int):
-        return dt.date(y0, 10, 1)
-    d = dt.date.today()
-    return dt.date(d.year, 10, 1)
+    from hockey_app.domain.seasons import season_start
+    return season_start(season)
 
 
 def _season_end_fallback(season: str) -> dt.date:
@@ -303,7 +281,7 @@ def _season_end_fallback(season: str) -> dt.date:
 _csv_start = _season_start_from_csv(SEASON)
 START_DATE, SEASON_END_DATE = _resolve_season_bounds_cached(
     SEASON,
-    fallback_start=_csv_start or _season_start_fallback(SEASON),
+    fallback_start=min(_csv_start, _season_start_fallback(SEASON)) if _csv_start else _season_start_fallback(SEASON),
     fallback_end=_season_end_fallback(SEASON),
 )
 _upsert_season_start_csv(SEASON, START_DATE, source="resolved")
@@ -374,74 +352,7 @@ TAB_TITLES: Dict[str, str] = {
 # ----------------------------
 # Team metadata
 # ----------------------------
-TEAM_NAMES: Dict[str, str] = {
-    "ANA": "Anaheim Ducks",
-    "BOS": "Boston Bruins",
-    "BUF": "Buffalo Sabres",
-    "CAR": "Carolina Hurricanes",
-    "CBJ": "Columbus Blue Jackets",
-    "CGY": "Calgary Flames",
-    "CHI": "Chicago Blackhawks",
-    "COL": "Colorado Avalanche",
-    "DAL": "Dallas Stars",
-    "DET": "Detroit Red Wings",
-    "EDM": "Edmonton Oilers",
-    "FLA": "Florida Panthers",
-    "LAK": "Los Angeles Kings",
-    "MIN": "Minnesota Wild",
-    "MTL": "Montreal Canadiens",
-    "NJD": "New Jersey Devils",
-    "NSH": "Nashville Predators",
-    "NYI": "New York Islanders",
-    "NYR": "New York Rangers",
-    "OTT": "Ottawa Senators",
-    "PHI": "Philadelphia Flyers",
-    "PIT": "Pittsburgh Penguins",
-    "SEA": "Seattle Kraken",
-    "SJS": "San Jose Sharks",
-    "STL": "St. Louis Blues",
-    "TBL": "Tampa Bay Lightning",
-    "TOR": "Toronto Maple Leafs",
-    "UTA": "Utah Mammoth",
-    "VAN": "Vancouver Canucks",
-    "VGK": "Vegas Golden Knights",
-    "WSH": "Washington Capitals",
-    "WPG": "Winnipeg Jets",
-}
-
-TEAM_CODE_ALIASES: Dict[str, str] = {
-    "ARI": "UTA",
-}
-
-
-def canon_team_code(code: str) -> str:
-    c = str(code).upper()
-    return TEAM_CODE_ALIASES.get(c, c)
-
-
-DIVS_MASTER: Dict[str, List[str]] = {
-    "Pacific":  ["ANA", "CGY", "EDM", "LAK", "SEA", "SJS", "VAN", "VGK"],
-    "Central":  ["CHI", "COL", "DAL", "MIN", "NSH", "STL", "WPG", "UTA"],
-    "Atlantic": ["BOS", "BUF", "DET", "FLA", "MTL", "OTT", "TBL", "TOR"],
-    "Metro":    ["CAR", "CBJ", "NJD", "NYI", "NYR", "PHI", "PIT", "WSH"],
-}
-WEST_DIVS = {"Pacific", "Central"}
-
-TEAM_TO_DIV: Dict[str, str] = {}
-TEAM_TO_CONF: Dict[str, str] = {}
-for div, lst in DIVS_MASTER.items():
-    for c in lst:
-        TEAM_TO_DIV[c] = div
-        TEAM_TO_CONF[c] = "West" if div in WEST_DIVS else "East"
-
-
-def division_columns_for_codes(codes: set[str]) -> Dict[str, List[str]]:
-    out: Dict[str, List[str]] = {}
-    for div, lst in DIVS_MASTER.items():
-        present = [c for c in lst if c in codes]
-        present.sort(key=lambda c: (TEAM_NAMES.get(c, c), c))
-        out[div] = present
-    return out
+from hockey_app.domain.teams import (TEAM_NAMES, TEAM_CODE_ALIASES, canon_team_code, DIVS_MASTER, WEST_DIVS, TEAM_TO_DIV, TEAM_TO_CONF, division_columns_for_codes)
 
 
 # ----------------------------

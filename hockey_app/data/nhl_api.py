@@ -246,7 +246,7 @@ class NHLApi:
         # If day < today, prefer pinned final data if present
         if d < today:
             pinned = self.cache.get_json(self._key_score_final(d), ttl_s=None)
-            if isinstance(pinned, dict):
+            if isinstance(pinned, dict) and self._day_is_final(pinned):
                 return pinned
 
             # not pinned yet: fetch with a reasonable TTL and then pin if final
@@ -431,7 +431,7 @@ class NHLApi:
     def _day_is_final(self, score_json: dict[str, Any]) -> bool:
         games = score_json.get("games") or []
         if not games:
-            return True  # no games => safe to pin; avoids re-fetching forever
+            return False  # Empty schedules can be unpublished or corrected later.
 
         return all(self._game_is_final(g) for g in games)
 

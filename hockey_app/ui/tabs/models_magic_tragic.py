@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hockey_app.domain.seasons import selected_nhl_games as _season_games
+
 import datetime as dt
 import math
 import tkinter as tk
@@ -329,15 +331,15 @@ def populate_magic_tragic_tab(
             # if GP is missing, assume 0 GP so rivals get maximum possible points.
             # This avoids premature "IN" (clinched-like) outcomes from approximated GP.
             gp = int(gp_map.get(code, 0))
-            gp = max(0, min(82, gp))
-            gr = max(0, 82 - gp)
+            gp = max(0, min(_season_games(), gp))
+            gr = max(0, _season_games() - gp)
             max_pts = p + 2.0 * gr
             max_pts_map: dict[str, float] = {}
             for t in conf_all_codes:
                 tp = float(pts.get(t, 0.0))
                 tgp = int(gp_map.get(t, 0))
-                tgp = max(0, min(82, tgp))
-                tgr = max(0, 82 - tgp)
+                tgp = max(0, min(_season_games(), tgp))
+                tgr = max(0, _season_games() - tgp)
                 max_pts_map[t] = tp + 2.0 * tgr
             row_vals: dict[str, str] = {
                 "Team": code,

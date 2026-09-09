@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hockey_app.domain.teams import pwhl_team_names
+
 import datetime as dt
 import tkinter as tk
 from typing import Any, Callable, Dict
@@ -139,7 +141,7 @@ def _build_goal_diff_df(api: NHLApi, start: dt.date, end: dt.date) -> tuple[pd.D
     return df, teams
 
 
-PWHL_TEAMS: list[str] = ["BOS", "MIN", "MTL", "NY", "OTT", "TOR", "VAN", "SEA"]
+PWHL_TEAMS: list[str] = list(pwhl_team_names())
 
 
 def _build_goal_diff_df_pwhl(api: PWHLApi, start: dt.date, end: dt.date) -> tuple[pd.DataFrame, list[str]]:

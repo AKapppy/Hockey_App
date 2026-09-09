@@ -6,18 +6,14 @@ from hockey_app import config as cfg
 from hockey_app.runtime.types import RuntimeSettings
 
 
-def _fallback_season() -> str:
-    d = dt.date.today()
-    y0 = d.year if d.month >= 10 else d.year - 1
-    return f"{y0}-{y0 + 1}"
+def _fallback_season(today: dt.date | None = None) -> str:
+    from hockey_app.domain.seasons import resolve_season
+    return resolve_season(today).season
 
 
 def _fallback_start_date(season: str) -> dt.date:
-    parts = [p for p in str(season).split("-") if p.strip()]
-    if len(parts) == 2 and parts[0].isdigit():
-        return dt.date(int(parts[0]), 10, 1)
-    d = dt.date.today()
-    return dt.date(d.year, 10, 1)
+    from hockey_app.domain.seasons import season_start
+    return season_start(season)
 
 
 def _fallback_end_date() -> dt.date:

@@ -240,7 +240,8 @@ def populate_point_probabilities_tab(
         labels = [dt.date.today()]
 
     team_names = PWHL_TEAM_NAMES if league_u == "PWHL" else TEAM_NAMES
-    season_games = 30 if league_u == "PWHL" else 82
+    from hockey_app.domain.seasons import games_per_team, resolve_season
+    season_games = games_per_team(league_u, resolve_season().season)
     _layout_state = {"can_scroll_y": True}
     state = {"sort": "max", "idx": len(labels) - 1}  # max | team
     prob_cache: dict[str, dict[str, Any]] = {}
@@ -252,7 +253,7 @@ def populate_point_probabilities_tab(
             return hit
 
         pts = points_snapshot(df, day)
-        if not pts:
+        if not pts or season_games is None:
             out = {"teams": [], "values": [], "row_probs": {}}
             prob_cache[key] = out
             return out

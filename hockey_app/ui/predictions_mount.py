@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hockey_app.domain.seasons import nhl_game_type
+
 import datetime as dt
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -245,7 +247,7 @@ def _xml_playoff_round(game_node: ET.Element) -> int:
 
     game_type = str(game_node.get("game_type") or game_node.get("game_type_id") or game_node.get("game_type_code") or "").strip().upper()
     gid = str(game_node.get("id") or "").strip()
-    if game_type not in {"3", "P"} and not gid.startswith("202503"):
+    if nhl_game_type({"gameType": game_type, "id": gid}) != 3:
         return 0
     try:
         round_no = int(gid[6:8])

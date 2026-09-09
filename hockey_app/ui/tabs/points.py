@@ -96,33 +96,8 @@ def _is_extra_time(g: dict[str, Any]) -> bool:
 
 def _is_nhl_game_in_phase(g: dict[str, Any], phase: str) -> bool:
     phase_name = _normalize_nhl_phase_name(phase)
-    gt = g.get("gameType") or g.get("gameTypeId") or g.get("gameTypeCode")
-    gt_txt = str(gt or "").strip().upper()
-    if phase_name == "Preseason":
-        if gt_txt in {"1", "PR", "PRE"}:
-            return True
-        if gt_txt in {"2", "R", "3", "P"}:
-            return False
-    elif phase_name == "Postseason":
-        if gt_txt in {"3", "P"}:
-            return True
-        if gt_txt in {"1", "PR", "PRE", "2", "R"}:
-            return False
-    else:
-        if gt_txt in {"2", "R"}:
-            return True
-        if gt_txt in {"1", "PR", "PRE", "3", "P"}:
-            return False
-    gid = str(g.get("id") or g.get("gameId") or "").strip()
-    if phase_name == "Preseason":
-        return gid.startswith("202501")
-    if phase_name == "Postseason":
-        return gid.startswith("202503")
-    if gid.startswith("202502"):
-        return True
-    if gid.startswith(("202501", "202503")):
-        return False
-    return False
+    from hockey_app.domain.seasons import nhl_game_type
+    return nhl_game_type(g) == {"Preseason": 1, "Regular Season": 2, "Postseason": 3}[phase_name]
 
 
 def _is_nhl_regular_season_game(g: dict[str, Any]) -> bool:
@@ -296,16 +271,8 @@ def _build_points_df(api: NHLApi, start: dt.date, end: dt.date, *, phase: str) -
     return df, teams
 
 
-PWHL_TEAM_NAMES: dict[str, str] = {
-    "BOS": "Boston Fleet",
-    "MIN": "Minnesota Frost",
-    "MTL": "Montreal Victoire",
-    "NY": "New York Sirens",
-    "OTT": "Ottawa Charge",
-    "TOR": "Toronto Sceptres",
-    "VAN": "Vancouver",
-    "SEA": "Seattle",
-}
+from hockey_app.domain.teams import pwhl_team_names
+PWHL_TEAM_NAMES = pwhl_team_names()
 
 
 def _build_points_df_pwhl(api: PWHLApi, start: dt.date, end: dt.date) -> tuple[pd.DataFrame, list[str]]:

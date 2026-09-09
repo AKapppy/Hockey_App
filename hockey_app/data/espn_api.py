@@ -15,11 +15,7 @@ class ESPNApi:
     def __init__(self, cache: DiskCache) -> None:
         self.cache = cache
         self.base_url: str = getattr(cfg, "ESPN_API_BASE_URL", "https://site.api.espn.com/apis/site/v2")
-        self.headers: dict[str, str] = getattr(
-            cfg,
-            "HEADERS",
-            {"User-Agent": "hockey_app/1.0 (+https://site.api.espn.com)"},
-        )
+        self.headers: dict[str, str] = {"Accept": "application/json"}
         self.timeout_s: int = int(getattr(cfg, "REQUEST_TIMEOUT_S", 20))
         self.live_ttl_s: int = int(getattr(cfg, "ESPN_SCOREBOARD_LIVE_TTL_S", 120))
 
@@ -29,7 +25,7 @@ class ESPNApi:
     def _ttl_for_date(self, d: date) -> Optional[int]:
         today = date.today()
         if d < today:
-            return None
+            return 7 * 24 * 3600
         if d == today:
             return self.live_ttl_s
         return 6 * 3600

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hockey_app.domain.seasons import selected_nhl_games as _season_games
+
 import datetime as dt
 from typing import Any
 
@@ -13,16 +15,8 @@ from hockey_app.data.paths import nhl_dir, pwhl_dir
 from hockey_app.data.xml_cache import read_table_xml, write_table_xml
 from hockey_app.ui.tabs.points import _build_points_df, _build_points_df_pwhl
 
-PWHL_TEAM_NAMES: dict[str, str] = {
-    "BOS": "Boston Fleet",
-    "MIN": "Minnesota Frost",
-    "MTL": "Montreal Victoire",
-    "NY": "New York Sirens",
-    "OTT": "Ottawa Charge",
-    "TOR": "Toronto Sceptres",
-    "VAN": "Vancouver Goldeneyes",
-    "SEA": "Seattle Torrent",
-}
+from hockey_app.domain.teams import pwhl_team_names
+PWHL_TEAM_NAMES = pwhl_team_names()
 
 
 def load_points_history(league: str = "NHL") -> tuple[pd.DataFrame, dt.date, dt.date]:
@@ -101,7 +95,7 @@ def load_points_history(league: str = "NHL") -> tuple[pd.DataFrame, dt.date, dt.
     df.index = idx
     df = df[~df.index.duplicated(keep="first")]
     if league_u == "PWHL":
-        pwhl_order = ["BOS", "MIN", "MTL", "NY", "OTT", "TOR", "VAN", "SEA"]
+        pwhl_order = list(pwhl_team_names())
         keep = [c for c in pwhl_order if c in set(df.index)]
     else:
         keep = [c for c in sorted(set(TEAM_NAMES.keys())) if c in set(df.index)]
@@ -364,4 +358,4 @@ def games_played_from_points(points: float, p_per_game: float = 1.15) -> int:
     if p_per_game <= 0:
         p_per_game = 1.15
     gp = int(round(float(points) / p_per_game))
-    return max(0, min(82, gp))
+    return max(0, min(_season_games(), gp))

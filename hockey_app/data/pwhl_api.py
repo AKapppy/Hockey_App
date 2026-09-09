@@ -204,7 +204,7 @@ class PWHLApi:
         raw = self._get_json(
             key,
             params,
-            ttl_s=7 * 24 * 3600,
+            ttl_s=3600,
             allow_network=allow_network,
             force_network=force_network,
         )
@@ -255,27 +255,31 @@ class PWHLApi:
             )
             return range_hits[0]
 
-        want = str(self._season_year_end(d))
-        want_prev = str(self._season_year_end(d) - 1)
+        end_year = self._season_year_end(d)
         for c in candidates:
-            lab = str(c.get("label") or "")
-            # Handle season labels that include one or both year values.
-            if (want in lab) or (want_prev in lab and want[-2:] in lab):
+            label = str(c.get("label") or "")
+            # A future preseason bucket does not announce the regular schedule.
+            if re.search(r"pre[ -]?season|playoff", label, re.I):
+                continue
+            years = re.search(r"(20\d{2})\s*[-–/]\s*(20\d{2}|\d{2})(?!\d)", label)
+            if years:
+                first = int(years[1])
+                last = int(years[2]) if len(years[2]) == 4 else first // 100 * 100 + int(years[2])
+                if first == end_year - 1 and last == end_year:
+                    return c
+            elif re.fullmatch(r"\s*" + str(end_year) + r"\s*", label):
                 return c
 
-        # Last resort: highest numeric id (newest season entry).
-        numeric = [c for c in candidates if str(c.get("id", "")).isdigit()]
-        if numeric:
-            numeric.sort(key=lambda c: int(str(c["id"])), reverse=True)
-            return numeric[0]
-        return candidates[0]
+        return None
 
     def _pick_season_id(self, d: dt.date, *, allow_network: bool, force_network: bool = False) -> Optional[str]:
+        self.season_diagnostics = {"id": None, "label": None, "status": "unpublished", "source": "no confident match"}
         candidates = self._season_candidates(allow_network=allow_network, force_network=force_network)
         if not candidates:
             return None
         self._dbg(f"season candidates={[(c['id'], c['label'], c.get('start'), c.get('end')) for c in candidates]}", d=d)
         chosen = self._select_season(candidates, d)
+        self.season_diagnostics = {"id": chosen.get("id") if chosen else None, "label": chosen.get("label") if chosen else None, "status": "resolved" if chosen else "unpublished", "source": "date-range or season-label" if chosen else "no confident match"}
         if not chosen:
             return None
         pick = str(chosen.get("id") or "").strip()
@@ -404,33 +408,8 @@ class PWHLApi:
         return None
 
     def _code_from_name(self, name: str) -> str:
-        n_raw = str(name or "")
-        n = n_raw.upper()
-        n_ascii = unicodedata.normalize("NFKD", n_raw).encode("ascii", "ignore").decode("ascii").upper()
-        lookup = {
-            "BOSTON": "BOS",
-            "FLEET": "BOS",
-            "MINNESOTA": "MIN",
-            "FROST": "MIN",
-            "MONTREAL": "MTL",
-            "MONTRÉAL": "MTL",
-            "VICTOIRE": "MTL",
-            "NEW YORK": "NY",
-            "SIRENS": "NY",
-            "OTTAWA": "OTT",
-            "CHARGE": "OTT",
-            "TORONTO": "TOR",
-            "SCEPTRES": "TOR",
-            "VANCOUVER": "VAN",
-            "SEATTLE": "SEA",
-        }
-        for k, v in lookup.items():
-            if (k in n) or (k in n_ascii):
-                return v
-        fallback = (n_ascii[:3] if len(n_ascii) >= 3 else "TBD").upper()
-        if fallback == "MON":
-            return "MTL"
-        return fallback
+        from hockey_app.domain.teams import pwhl_code
+        return pwhl_code(name)
 
     def _to_int(self, v: Any, default: int = 0) -> int:
         try:
@@ -486,7 +465,7 @@ class PWHLApi:
             "division_id": "-1",
             "lang": "en",
         }
-        ttl = 45 if d == dt.date.today() else (None if d < dt.date.today() else 12 * 3600)
+        ttl = 45 if d == dt.date.today() else (7 * 24 * 3600 if d < dt.date.today() else 3600)
         raw, ts, source = self._get_json_with_meta(
             key,
             params_primary,
@@ -706,6 +685,8 @@ class PWHLApi:
                         "goalScorers": home_scorers,
                     },
                     "league": "PWHL",
+                    "provider": "PWHL",
+                    "venue": {"default": str(r.get("venue_name") or "")},
                     "statusText": status_txt,
                 }
             )

@@ -10,6 +10,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from hockey_app.data.paths import cache_dir
+from hockey_app.domain.schedules import provider_for_game
 
 
 def _xml_season_dir(season: str) -> Path:
@@ -238,6 +239,24 @@ def write_games_day_xml(*, season: str, day: dt.date, games: list[dict[str, Any]
     root.set("lump", "games")
     root.set("updated_at", _now_iso())
 
+    # Provider IDs are stable across date/time/opponent changes, but namespaced.
+    def identity(game):
+        league = str(game.get("league") or "NHL").upper()
+        provider = provider_for_game(game)
+        gid = str(game.get("id") or game.get("gameId") or "")
+        return (league, provider, gid) if gid else None
+    incoming = {identity(g) for g in games if identity(g)}
+    for old_day in root.findall("day"):
+        for old in list(old_day.findall("game")):
+            league = (old.get("league") or "NHL").upper()
+            key = (league, provider_for_game(dict(old.attrib)), old.get("id") or "")
+            if key in incoming:
+                old_day.remove(old)
+    unique = {}
+    for index, game in enumerate(games):
+        unique[identity(game) or ("anonymous", index)] = game
+    games = list(unique.values())
+
     day_iso = day.isoformat()
     for node in list(root.findall("day")):
         if node.get("date") == day_iso:
@@ -257,6 +276,7 @@ def write_games_day_xml(*, season: str, day: dt.date, games: list[dict[str, Any]
         attrs = {
             "id": _to_text(game.get("id") or game.get("gameId")),
             "league": _to_text(game.get("league")),
+            "provider": _to_text(game.get("provider") or game.get("sourceProvider")),
             "state": _to_text(game.get("gameState") or game.get("gameStatus") or game.get("state")).upper(),
             "status_text": _to_text(game.get("statusText")),
             "stage": _to_text(game.get("displayStage")),
@@ -279,6 +299,7 @@ def write_games_day_xml(*, season: str, day: dt.date, games: list[dict[str, Any]
             "game_type_code": _to_text(game.get("gameTypeCode")),
             "playoff_round": _to_text(game.get("playoffRound") or game.get("round")),
             "schedule_state": _to_text(game.get("gameScheduleState")),
+            "venue": _to_text(game.get("venue", {}).get("default") if isinstance(game.get("venue"), dict) else game.get("venue")),
         }
         node = ET.SubElement(day_node, "game", attrs)
         teams = ET.SubElement(node, "teams")
@@ -328,10 +349,12 @@ def read_games_day_xml(*, season: str, day: dt.date) -> list[dict[str, Any]]:
             if home_name:
                 home["name"] = {"default": home_name}
         row: dict[str, Any] = {
-            "id": _to_int(game.get("id")) or 0,
+            "id": _to_int(game.get("id")) or _to_text(game.get("id")),
             "league": _to_text(game.get("league")),
+            "provider": _to_text(game.get("provider") or game.get("sourceProvider")),
             "gameState": _to_text(game.get("state")).upper(),
             "statusText": _to_text(game.get("status_text")),
+            "venue": {"default": _to_text(game.get("venue"))},
             "displayStage": _to_text(game.get("stage")),
             "olympicsDivision": _to_text(game.get("division")),
             "startTimeUTC": _to_text(game.get("start_utc")),
@@ -694,3 +717,43 @@ def read_predictions_tables_xml(*, season: str, metrics: list[str] | None = None
         if isinstance(frame, pd.DataFrame) and not frame.empty:
             out[metric] = frame
     return out
+
+
+def read_games_cache_manifest(*, season: str) -> dict[str, Any]:
+    """Distinguish a cached empty day from a day never retrieved."""
+    path = _xml_path(season, 'games')
+    if not path.exists():
+        return {'days': [], 'updatedAt': None}
+    root = ET.parse(path).getroot()
+    return {'days': [node.get('date') for node in root.findall('day')],
+            'updatedAt': root.get('updated_at')}
+
+
+def read_games_populated_bounds(*, season: str, league: str = "NHL") -> tuple[dt.date | None, dt.date | None]:
+    """Return the first and last cached days containing a game for ``league``."""
+    path = _xml_path(season, "games")
+    if not path.exists():
+        return None, None
+    try:
+        root = ET.parse(path).getroot()
+    except Exception:
+        return None, None
+    wanted = str(league).upper()
+    try:
+        season_year, end_year = (int(part) for part in str(season).split("-", 1))
+        season_floor, season_ceiling = dt.date(season_year, 7, 1), dt.date(end_year, 6, 30)
+    except (TypeError, ValueError):
+        season_floor = season_ceiling = None
+    populated: list[dt.date] = []
+    for day_node in root.findall("day"):
+        has_game = any(str(game.get("league") or "NHL").upper() == wanted for game in day_node.findall("game"))
+        if not has_game:
+            continue
+        try:
+            day = dt.date.fromisoformat(str(day_node.get("date")))
+        except (TypeError, ValueError):
+            continue
+        if season_floor is not None and not (season_floor <= day <= season_ceiling):
+            continue
+        populated.append(day)
+    return (min(populated), max(populated)) if populated else (None, None)

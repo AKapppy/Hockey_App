@@ -12,13 +12,17 @@
   let metricTitles = {};
   let byCode = new Map();
   let desktop = {};
+  let pwhlTeams = [];
+  let availableSeasons = [];
   function hydrateData(nextData) {
     data = nextData;
     metricOrder = (data.metrics || []).map((m) => m.key);
     metricLabels = Object.fromEntries((data.metrics || []).map((m) => [m.key, m.label]));
     metricTitles = Object.fromEntries((data.metrics || []).map((m) => [m.key, m.title]));
-    byCode = new Map((data.teams || []).map((t) => [t.code, t]));
+    byCode = new Map([...(data.teamRegistry || []).filter(t => t.league === "NHL"), ...(data.teams || [])].map((t) => [t.code, t]));
     desktop = data.desktop || {};
+    pwhlTeams = (data.teamRegistry || []).filter(t => t.league === "PWHL").map(t => [t.code, t.name]);
+    availableSeasons = [...new Set([...availableSeasons, ...(data.metadata?.availableSeasons || []), data.metadata?.season].filter(Boolean))].sort().reverse();
   }
   hydrateData(data);
 
@@ -30,21 +34,7 @@
     round4: "Cup Final",
     woncup: "Win Cup",
   };
-  const pwhlTeams = [
-    ["BOS", "Boston Fleet"],
-    ["MIN", "Minnesota Frost"],
-    ["MTL", "Montreal Victoire"],
-    ["NY", "New York Sirens"],
-    ["OTT", "Ottawa Charge"],
-    ["TOR", "Toronto Sceptres"],
-    ["VAN", "Vancouver"],
-    ["SEA", "Seattle"],
-  ];
-  const nhlLogoCodes = new Set([
-    "ANA", "BOS", "BUF", "CAR", "CBJ", "CGY", "CHI", "COL", "DAL", "DET", "EDM", "FLA",
-    "LAK", "MIN", "MTL", "NJD", "NSH", "NYI", "NYR", "OTT", "PHI", "PIT", "SEA", "SJS",
-    "STL", "TBL", "TOR", "UTA", "VAN", "VGK", "WPG", "WSH",
-  ]);
+  const nhlLogoCodes = new Set((data.teamRegistry || data.teams || []).filter(t => !t.league || t.league === "NHL").map(t => t.code));
   const iihfLogoCodes = new Set(["CAN", "CZE", "DEN", "FIN", "FRA", "GER", "ITA", "JPN", "LAT", "SUI", "SVK", "SWE", "USA"]);
   const emptyLogo = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E";
   const webMainTabs = ["Scoreboard", "Stats", "Predictions", "Models"];
@@ -188,9 +178,10 @@
     const days = scoreboardDays();
     if (!days.length) return "";
     if (state.scoreboardDate && days.includes(state.scoreboardDate)) return state.scoreboardDate;
-    state.scoreboardDate = scoreboard.latestDay && days.includes(scoreboard.latestDay)
-      ? scoreboard.latestDay
-      : days[days.length - 1];
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const scheduled = days.filter(d => (scoreboard.days[d] || []).length);
+    state.scoreboardDate = days.includes(today) ? today : (scheduled.length ? scheduled : days).reduce((a, b) => Math.abs(Date.parse(a) - Date.parse(today)) <= Math.abs(Date.parse(b) - Date.parse(today)) ? a : b);
     return state.scoreboardDate;
   }
 
@@ -226,7 +217,10 @@
     const raw = String(code || abbreviation || countryCode || "").toUpperCase().trim();
     if (!raw || raw === "TBD") return emptyLogo;
     const leagueU = String(league || "").toUpperCase();
-    if (leagueU === "PWHL") return `assets/pwhl_logos/${normalizedPwhlCode(raw)}.png`;
+    if (leagueU === "PWHL") {
+      const team = (data.teamRegistry || []).find(t => t.league === "PWHL" && t.code === normalizedPwhlCode(raw));
+      return team ? (team.logo || emptyLogo) : emptyLogo;
+    }
     if (leagueU === "IIHF" || leagueU.startsWith("OLYMPICS")) {
       return iihfLogoCodes.has(raw) ? `assets/iihf_logos/${raw}.png` : emptyLogo;
     }
@@ -449,10 +443,14 @@
       const enteringSeriesScores = playoffSeriesScoresByDay(day, false, playoffRoundFromGame(game));
       return !shouldHideCompletedPlayoffSeriesGame(game, enteringSeriesScores);
     });
-    if (!games.length) return renderComingSoon("Scoreboard", "No exported scoreboard data is available yet.");
+    const pwhlNotice = data.metadata?.pwhlSchedule === "unpublished" ? "PWHL schedule not released for this season." : "";
+    const staleNotice = Date.now() - Date.parse(data.metadata?.scheduleGeneratedAt || data.metadata?.generatedAt || "") > 48 * 3600000 ? '<div role="alert">Warning: schedule data is more than two days old.</div>' : "";
+    if (!games.length) return `<div class="scoreboard-page">${staleNotice}${renderScoreboardStepper()}${renderComingSoon("Scoreboard", day ? "No games scheduled on this date." : "Schedule data source unavailable.")}<p>${esc(pwhlNotice)}</p></div>`;
     const grouped = groupScoreboardGames(games);
     return `
       <div class="scoreboard-page page-fill">
+        ${staleNotice}
+        ${pwhlNotice ? `<p>${esc(pwhlNotice)}</p>` : ""}
         ${renderScoreboardStepper()}
         <div class="scoreboard-date">${esc(prettyLongDate(day))}</div>
         ${grouped.map(([league, leagueGames]) => `
@@ -1065,7 +1063,8 @@
     if (!game || String(game.league || "").toUpperCase() !== "NHL") return false;
     const gameType = String(game.gameType || game.gameTypeId || game.gameTypeCode || "").toUpperCase();
     const gid = String(game.id || game.gameId || "");
-    return gameType === "3" || gameType === "P" || gameType === "PO" || gameType === "PLAYOFFS" || gid.startsWith("202503");
+    if (gameType) return ["3", "P", "PO", "PLAYOFFS"].includes(gameType);
+    return /^\d{4}03\d{4}$/.test(gid);
   }
 
   function playoffRoundFromGame(game) {
@@ -1350,7 +1349,7 @@
             <thead><tr><th class="team-cell">Team</th><th>PTS</th><th>GR</th><th>MAX</th><th>Playoff Magic</th><th>Elim Tragic</th></tr></thead>
             <tbody>${rows.map((code) => {
               const row = stats[code] || {};
-              const gr = Number(row.gr ?? Math.max(0, 82 - Number(row.gp || 0)));
+              const gr = Number(row.gr ?? (data.seasonRules?.NHL == null ? null : Math.max(0, data.seasonRules.NHL - Number(row.gp || 0))));
               const maxPts = Number(row.mxp ?? ((pts[code] || 0) + gr * 2));
               const cutTeam = (byCode.get(code) || {}).conference === "East" ? eastCut : westCut;
               const cut = cutTeam ? (pts[cutTeam] || 0) : 0;
@@ -1537,6 +1536,7 @@
   }
 
   function renderPredictionsPage(tabKey, note) {
+    if (data.metadata?.predictions?.status === "unavailable") return renderComingSoon("Predictions unavailable", "MoneyPuck has not published usable predictions, or its data source is unavailable.");
     const tabs = ["Pie Chart", ...data.metrics.map((m) => m.label)];
     const active = state[tabKey];
     if (state.league === "PWHL") {
@@ -1886,20 +1886,30 @@
 
   function renderSeasonMenu() {
     const season = data.metadata.season || "2025-2026";
-    const start = Number(String(season).slice(0, 4)) || 2025;
-    const years = [];
-    for (let y = start; y >= 2023; y -= 1) years.push(`${y}-${y + 1}`);
-    return years.map((s) => {
+    const seasons = availableSeasons.length ? availableSeasons : [season];
+    return seasons.map((s) => {
       const short = s.replace(/-(\d{2})\d{2}$/, "-$1");
       return `<div class="menu-item" data-season="${esc(s)}">${esc(short)}${s === season ? "  (current)" : ""}</div>`;
     }).join("");
   }
 
-  function onClick(event) {
+  async function onClick(event) {
     const tab = event.target.closest(".tab");
     if (tab) {
       const scope = tab.closest(".tabbar").dataset.scope;
       const label = tab.dataset.tab;
+      if (scope === "main" && label !== "Scoreboard" && data.detailsUrl) {
+        try {
+          const response = await fetch(`${data.detailsUrl}?v=${encodeURIComponent(data.metadata.generatedAt)}`);
+          if (!response.ok) throw new Error("Data download failed");
+          const full = await response.json();
+          if (full.metadata.generatedAt !== data.metadata.generatedAt) throw new Error("Export changed; reload the page");
+          hydrateData(full);
+        } catch (error) {
+          app.innerHTML = renderComingSoon("Data source unavailable", String(error.message));
+          return;
+        }
+      }
       if (scope === "main") state.mainTab = label;
       if (scope === "stats") state.statsTab = label;
       if (scope === "models") state.modelsTab = label;
@@ -2011,8 +2021,25 @@
 
     const seasonEl = event.target.closest("[data-season]");
     if (seasonEl) {
+      const season = seasonEl.dataset.season;
       state.openMenu = null;
-      render();
+      if (season === data.metadata.season) {
+        render();
+        return;
+      }
+      try {
+        const response = await fetch(`seasons/${encodeURIComponent(season)}/data.json?v=${encodeURIComponent(data.metadata.generatedAt || "")}`);
+        if (!response.ok) throw new Error(`Season ${season} is not available`);
+        hydrateData(await response.json());
+        state.selectedTeam = null;
+        state.scoreboardDate = null;
+        state.dateIdx = maxDateIndex();
+        state.modelDateIdx = maxDesktopDateIndex("points");
+        state.metricSort = {};
+        render();
+      } catch (error) {
+        app.innerHTML = renderComingSoon("Season unavailable", String(error.message || error));
+      }
       return;
     }
 

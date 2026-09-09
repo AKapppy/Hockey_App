@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from hockey_app.domain.teams import pwhl_team_names
+
 import datetime as dt
 import math
 import os
 from pathlib import Path
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -47,17 +50,8 @@ PWHL_TEAM_COLORS: dict[str, str] = {
     "VAN": "#0077B6",
     "SEA": "#264653",
 }
-PWHL_TEAM_ORDER: list[str] = ["BOS", "MIN", "MTL", "NY", "OTT", "TOR", "VAN", "SEA"]
-PWHL_TEAM_NAMES: dict[str, str] = {
-    "BOS": "Boston Fleet",
-    "MIN": "Minnesota Frost",
-    "MTL": "Montreal Victoire",
-    "NY": "New York Sirens",
-    "OTT": "Ottawa Charge",
-    "TOR": "Toronto Sceptres",
-    "VAN": "Vancouver",
-    "SEA": "Seattle",
-}
+PWHL_TEAM_ORDER: list[str] = list(pwhl_team_names())
+PWHL_TEAM_NAMES = pwhl_team_names()
 
 
 def _empty_prediction_tables_for_range(
@@ -77,7 +71,7 @@ def _empty_prediction_tables_for_range(
     ] or [f"{start_date.month}/{start_date.day}"]
     return {
         metric_key: pd.DataFrame(
-            {col: [0.0 for _ in base_codes] for col in columns},
+            {col: [float("nan") for _ in base_codes] for col in columns},
             index=base_codes,
             dtype="float64",
         )
@@ -253,7 +247,8 @@ def launch_predictions_ui_window(
 
     def _default_current_season_start() -> int:
         d = dt.date.today()
-        return d.year if d.month >= 10 else d.year - 1
+        from hockey_app.domain.seasons import resolve_season
+        return int(resolve_season(d).season[:4])
 
     def _season_choices(min_start: int = 2023) -> list[str]:
         current_start = _season_start_year(season)
@@ -450,8 +445,8 @@ def launch_predictions_ui_window(
                 fg="#f0f0f0",
                 font=("TkDefaultFont", 16, "bold"),
                 padx=20,
-                pady=(16, 8),
-            ).pack()
+                pady=0,
+            ).pack(pady=(16, 8))
             status_lbl = tk.Label(
                 panel,
                 text="Loading season data...",
@@ -459,9 +454,9 @@ def launch_predictions_ui_window(
                 fg="#c7c7c7",
                 font=("TkDefaultFont", 11),
                 padx=20,
-                pady=(0, 8),
+                pady=0,
             )
-            status_lbl.pack()
+            status_lbl.pack(pady=(0, 8))
             bar_style = "SeasonSwitch.Horizontal.TProgressbar" if bool(season_switch_state.get("style_ready")) else "Horizontal.TProgressbar"
             bar = ttk.Progressbar(panel, mode="determinate", maximum=100.0, length=300, style=bar_style)
             bar.pack(padx=20, pady=(0, 16))
@@ -477,17 +472,17 @@ def launch_predictions_ui_window(
                 bg="#242424",
                 fg="#f0f0f0",
                 padx=16,
-                pady=(16, 8),
-            ).pack()
+                pady=0,
+            ).pack(pady=(16, 8))
             status_lbl = tk.Label(
                 panel,
                 text="Loading season data...",
                 bg="#242424",
                 fg="#f0f0f0",
                 padx=16,
-                pady=(0, 8),
+                pady=0,
             )
-            status_lbl.pack()
+            status_lbl.pack(pady=(0, 8))
             bar = ttk.Progressbar(panel, mode="determinate", maximum=100.0, length=300)
             bar.pack(padx=16, pady=(0, 16))
         try:
@@ -573,15 +568,20 @@ def launch_predictions_ui_window(
         except Exception:
             season_switch_state["watchdog_after"] = None
 
-    def _exec_into_season(new_season: str) -> None:
+    def _launch_season_process(new_season: str) -> subprocess.Popen:
         env = dict(os.environ)
         env["HOCKEY_SEASON"] = str(new_season).strip()
         cwd = Path(__file__).resolve().parents[2]
-        try:
-            os.chdir(str(cwd))
-        except Exception:
-            pass
-        os.execvpe(sys.executable, [sys.executable, "-m", "hockey_app"], env)
+        # Starting a fresh interpreter avoids reinitializing Tk/Cocoa inside an
+        # exec-replaced macOS GUI process, which can leave the replacement window
+        # permanently stuck during startup.
+        return subprocess.Popen(
+            [sys.executable, "-m", "hockey_app"],
+            cwd=str(cwd),
+            env=env,
+            close_fds=True,
+            start_new_session=True,
+        )
 
     def _restart_with_season(new_season: str) -> None:
         new_season = str(new_season).strip()
@@ -605,7 +605,9 @@ def launch_predictions_ui_window(
             try:
                 _set_switch_status("Launching season...")
                 _set_switch_progress(92.0)
-                _exec_into_season(new_season)
+                _launch_season_process(new_season)
+                _set_switch_progress(100.0)
+                root.after(80, root.destroy)
             except Exception as e:
                 season_switch_state["busy"] = False
                 _hide_season_switch_overlay()

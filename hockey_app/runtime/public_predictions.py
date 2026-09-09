@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hockey_app.domain.seasons import nhl_game_type
+
 import datetime as dt
 import math
 import random
@@ -93,7 +95,7 @@ def _is_playoff_game_row(row: dict[str, Any]) -> bool:
         or ""
     ).upper().strip()
     gid = str(row.get("id") or "").strip()
-    return game_type in {"3", "P", "PO", "PLAYOFFS"} or (len(gid) >= 6 and gid[4:6] == "03")
+    return nhl_game_type({"gameType": game_type, "id": gid}) == 3
 
 
 def _series_key(a: str, b: str) -> tuple[str, str]:

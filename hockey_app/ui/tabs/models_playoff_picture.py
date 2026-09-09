@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from hockey_app.domain.seasons import nhl_game_type
+
+from hockey_app.domain.seasons import selected_nhl_games as _season_games
+
 import datetime as dt
 import tkinter as tk
 import xml.etree.ElementTree as ET
@@ -256,7 +260,7 @@ def _series_score_snapshot(day: dt.date, *, league: str) -> dict[tuple[str, str]
                 continue
             gid = str(game.get("id") or "").strip()
             game_type = str(game.get("game_type") or game.get("game_type_id") or game.get("game_type_code") or "").strip()
-            is_playoff = game_type in {"3", "P"} or gid.startswith("202503")
+            is_playoff = nhl_game_type({"gameType": game_type, "id": gid}) == 3
             if not is_playoff:
                 continue
             state = str(game.get("state") or "").upper().strip()
@@ -310,7 +314,7 @@ def _playoff_rounds_started_from_xml_root(root: ET.Element, day: dt.date) -> set
                 continue
             gid = str(game.get("id") or "").strip()
             game_type = str(game.get("game_type") or game.get("game_type_id") or game.get("game_type_code") or "").strip()
-            is_playoff = game_type in {"3", "P"} or gid.startswith("202503")
+            is_playoff = nhl_game_type({"gameType": game_type, "id": gid}) == 3
             if not is_playoff:
                 continue
             round_no = _playoff_round_from_xml_game(game)
@@ -368,12 +372,12 @@ def playoff_status_map(
             if len(current_sorted) < 9:
                 continue
             for code in conf_codes:
-                gp = max(0, min(82, int(gp_map.get(code, 0))))
+                gp = max(0, min(_season_games(), int(gp_map.get(code, 0))))
                 conf_seq = int((standings or {}).get(code, {}).get("conferenceSequence") or 999)
-                if gp >= 82 and conf_seq > 8:
+                if gp >= _season_games() and conf_seq > 8:
                     out[str(code)] = "eliminated"
                     continue
-                max_pts = float(pts.get(code, 0.0)) + (2.0 * float(82 - gp))
+                max_pts = float(pts.get(code, 0.0)) + (2.0 * float(_season_games() - gp))
                 others = sorted((float(pts.get(other, 0.0)) for other in conf_codes if other != code), reverse=True)
                 if len(others) >= 8 and others[7] > (max_pts + 0.1):
                     out[str(code)] = "eliminated"
