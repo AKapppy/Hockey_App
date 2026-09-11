@@ -45,9 +45,9 @@ Download missing MoneyPuck simulation CSVs first, then rebuild:
 python3 -m hockey_app.tools.export_web --out docs --refresh
 ```
 
-The GitHub Pages workflow also runs this refresh/export hourly, commits changed generated web files back to `main`, and then deploys the refreshed `docs/` artifact. GitHub Pages is static hosting, so a browser page view cannot itself update repository data; the scheduled/manual workflow is the automatic update path.
+The GitHub Pages workflow runs this refresh/export hourly and deploys the generated `docs/` artifact directly. Generated `data.js`, `data.json`, and season payloads are intentionally not tracked. GitHub Pages is static hosting, so a browser page view cannot itself update data; the scheduled/manual workflow is the automatic update path.
 
-Open `docs/index.html` directly, or serve the folder locally:
+On a fresh clone, run the exporter before opening the web app. Then open `docs/index.html` directly, or serve the folder locally:
 
 ```bash
 python3 -m http.server 8000 --directory docs
@@ -70,7 +70,7 @@ After pushing to GitHub:
 3. Set the source to **GitHub Actions**.
 4. Run the **Publish Web App** workflow, or push to `main`.
 
-The checked-in `docs/` folder can also be used as a Pages source if you prefer the simpler `main` branch `/docs` setup.
+The workflow-generated Pages artifact is the supported deployment path.
 
 ## Cache Doctor
 
@@ -85,6 +85,12 @@ Clean known-safe legacy artifacts:
 ```bash
 python3 -m hockey_app cache doctor --clean
 ```
+
+## Static payload layout
+
+The generated `data.js` is the scoreboard bootstrap. Full stats, predictions, and models remain in `data.json`, and historical seasons are loaded only when selected. A later performance pass can split the full payload into separate Stats, Predictions, and Models files; this correctness pass keeps the existing frontend contract stable.
+
+Magic/Tragic values are planning estimates based on the available standings and tiebreak data. They are not official or mathematically exhaustive clinch and elimination determinations.
 
 ## Architecture (Current)
 

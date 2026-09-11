@@ -40,6 +40,9 @@ jobs:
       - name: Run offline regression tests
         run: python -m unittest discover -s tests -v
 
+      - name: Check static JavaScript syntax
+        run: node --check docs/app.js
+
       - name: Export static web data
         run: python -m hockey_app.tools.export_web --out docs --refresh
 

@@ -31,3 +31,8 @@ notes.txt
 # Keep the GitHub Pages build tracked.
 !docs/
 !docs/**
+docs/**/.DS_Store
+docs/data.js
+docs/data.json
+docs/season-index.json
+docs/seasons/

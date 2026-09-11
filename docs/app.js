@@ -11,6 +11,7 @@
   let metricLabels = {};
   let metricTitles = {};
   let byCode = new Map();
+  let byTeamKey = new Map();
   let desktop = {};
   let pwhlTeams = [];
   let availableSeasons = [];
@@ -20,6 +21,7 @@
     metricLabels = Object.fromEntries((data.metrics || []).map((m) => [m.key, m.label]));
     metricTitles = Object.fromEntries((data.metrics || []).map((m) => [m.key, m.title]));
     byCode = new Map([...(data.teamRegistry || []).filter(t => t.league === "NHL"), ...(data.teams || [])].map((t) => [t.code, t]));
+    byTeamKey = new Map((data.teamRegistry || []).map((t) => [`${t.league}:${t.code}`, t]));
     desktop = data.desktop || {};
     pwhlTeams = (data.teamRegistry || []).filter(t => t.league === "PWHL").map(t => [t.code, t.name]);
     availableSeasons = [...new Set([...availableSeasons, ...(data.metadata?.availableSeasons || []), data.metadata?.season].filter(Boolean))].sort().reverse();
@@ -208,7 +210,7 @@
 
   function normalizedPwhlCode(code) {
     const raw = String(code || "").toUpperCase().trim();
-    if (raw === "MON" || raw === "MTL") return "MON";
+    if (raw === "MON" || raw === "MTL") return "MTL";
     if (raw === "NYC") return "NY";
     return raw;
   }
@@ -218,7 +220,7 @@
     if (!raw || raw === "TBD") return emptyLogo;
     const leagueU = String(league || "").toUpperCase();
     if (leagueU === "PWHL") {
-      const team = (data.teamRegistry || []).find(t => t.league === "PWHL" && t.code === normalizedPwhlCode(raw));
+      const team = byTeamKey.get(`PWHL:${normalizedPwhlCode(raw)}`);
       return team ? (team.logo || emptyLogo) : emptyLogo;
     }
     if (leagueU === "IIHF" || leagueU.startsWith("OLYMPICS")) {

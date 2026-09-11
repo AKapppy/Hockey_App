@@ -125,7 +125,7 @@ def _magic_cell(
     playoff_cutoff_rival_max_pts: float,
 ) -> str:
     """
-    Winning-magic semantics (PlayoffStatus style):
+    Heuristic winning-magic semantics (PlayoffStatus style):
     - *: already clinched this slot (or better)
     - X: cannot win this slot (even with help)
     - DNCD: can still win, but not by own results alone
@@ -533,7 +533,7 @@ def populate_magic_tragic_tab(
             c.create_text(
                 view_w / 2,
                 12,
-                text="Tiebreak order: official NHL standings sequence (PTS, ROW, RW, head-to-head where applicable)",
+                text="Planning estimates; not official clinch/elimination determinations. Tiebreak order uses available NHL standings data.",
                 fill="#b5b5b5",
                 anchor="n",
                 font=("TkDefaultFont", 9),
@@ -545,7 +545,7 @@ def populate_magic_tragic_tab(
             c.create_text(
                 xL + w1 / 2,
                 y_top - 10,
-                text="West Magic Numbers",
+                text="Estimated West Magic Numbers",
                 fill="#f0f0f0",
                 anchor="center",
                 font=("TkDefaultFont", 14, "bold"),
@@ -553,7 +553,7 @@ def populate_magic_tragic_tab(
             c.create_text(
                 xR + w2 / 2,
                 y_top - 10,
-                text="East Magic Numbers",
+                text="Estimated East Magic Numbers",
                 fill="#f0f0f0",
                 anchor="center",
                 font=("TkDefaultFont", 14, "bold"),
@@ -573,7 +573,7 @@ def populate_magic_tragic_tab(
             c.create_text(
                 xL + w1 / 2,
                 y2 - 10,
-                text="West Tragic Numbers",
+                text="Estimated West Tragic Numbers",
                 fill="#f0f0f0",
                 anchor="center",
                 font=("TkDefaultFont", 14, "bold"),
@@ -581,7 +581,7 @@ def populate_magic_tragic_tab(
             c.create_text(
                 xR + w2 / 2,
                 y2 - 10,
-                text="East Tragic Numbers",
+                text="Estimated East Tragic Numbers",
                 fill="#f0f0f0",
                 anchor="center",
                 font=("TkDefaultFont", 14, "bold"),

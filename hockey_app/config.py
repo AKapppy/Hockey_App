@@ -89,17 +89,8 @@ def _season_start_from_csv(season: str) -> dt.date | None:
 
 
 def _upsert_season_start_csv(season: str, start_date: dt.date, *, source: str) -> None:
-    rows = _read_season_dates_rows()
-    key = str(season).strip()
-    now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    row = rows.get(key, {})
-    row["start_date"] = start_date.isoformat()
-    if not str(row.get("regular_season_start") or "").strip():
-        row["regular_season_start"] = start_date.isoformat()
-    row["source"] = source
-    row["updated_at"] = now
-    rows[key] = row
-    _write_season_dates_rows(rows)
+    from hockey_app.domain.seasons import update_season_metadata
+    update_season_metadata(season, dates={"preseason": start_date.isoformat()}, source=source)
 
 
 SEASON = _season_from_env_or_default()
@@ -278,13 +269,10 @@ def _season_end_fallback(season: str) -> dt.date:
     return dt.date.today()
 
 
-_csv_start = _season_start_from_csv(SEASON)
-START_DATE, SEASON_END_DATE = _resolve_season_bounds_cached(
-    SEASON,
-    fallback_start=min(_csv_start, _season_start_fallback(SEASON)) if _csv_start else _season_start_fallback(SEASON),
-    fallback_end=_season_end_fallback(SEASON),
-)
-_upsert_season_start_csv(SEASON, START_DATE, source="resolved")
+from hockey_app.domain.seasons import season_metadata
+_canonical_season = season_metadata().get(SEASON, {})
+START_DATE = _parse_iso_date(_canonical_season.get("preseason")) or _season_start_fallback(SEASON)
+SEASON_END_DATE = _parse_iso_date(_canonical_season.get("postseason_end")) or _season_end_fallback(SEASON)
 TODAY = dt.date.today()
 END_DATE = min(TODAY, SEASON_END_DATE)
 if END_DATE < START_DATE:

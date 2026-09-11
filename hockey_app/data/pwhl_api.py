@@ -274,12 +274,21 @@ class PWHLApi:
 
     def _pick_season_id(self, d: dt.date, *, allow_network: bool, force_network: bool = False) -> Optional[str]:
         self.season_diagnostics = {"id": None, "label": None, "status": "unpublished", "source": "no confident match"}
-        candidates = self._season_candidates(allow_network=allow_network, force_network=force_network)
+        try:
+            candidates = self._season_candidates(allow_network=allow_network, force_network=force_network)
+        except Exception as exc:
+            self.season_diagnostics = {"id": None, "label": None, "status": "provider_error", "source": type(exc).__name__}
+            self.cache.set_json("pwhl/season_status", self.season_diagnostics)
+            raise
         if not candidates:
+            prior = self.cache.get_json("pwhl/season_status", ttl_s=None)
+            if isinstance(prior, dict) and prior.get("status") == "provider_error":
+                self.season_diagnostics = prior
             return None
         self._dbg(f"season candidates={[(c['id'], c['label'], c.get('start'), c.get('end')) for c in candidates]}", d=d)
         chosen = self._select_season(candidates, d)
         self.season_diagnostics = {"id": chosen.get("id") if chosen else None, "label": chosen.get("label") if chosen else None, "status": "resolved" if chosen else "unpublished", "source": "date-range or season-label" if chosen else "no confident match"}
+        self.cache.set_json("pwhl/season_status", self.season_diagnostics)
         if not chosen:
             return None
         pick = str(chosen.get("id") or "").strip()
@@ -302,16 +311,7 @@ class PWHLApi:
         chosen = self._select_season(candidates, d)
         if chosen is not None:
             return chosen.get("start"), chosen.get("end")
-        starts: list[dt.date] = []
-        ends: list[dt.date] = []
-        for c in candidates:
-            s = c.get("start")
-            e = c.get("end")
-            if isinstance(s, dt.date):
-                starts.append(s)
-            if isinstance(e, dt.date):
-                ends.append(e)
-        return (min(starts) if starts else None, max(ends) if ends else None)
+        return None, None
 
     def _parse_date(self, s: str) -> Optional[dt.date]:
         t = str(s or "").strip()

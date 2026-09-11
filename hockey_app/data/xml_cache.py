@@ -10,7 +10,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from hockey_app.data.paths import cache_dir
-from hockey_app.domain.schedules import provider_for_game
+from hockey_app.domain.schedules import game_identity, provider_for_game
 
 
 def _xml_season_dir(season: str) -> Path:
@@ -238,13 +238,11 @@ def write_games_day_xml(*, season: str, day: dt.date, games: list[dict[str, Any]
     root.set("season", str(season))
     root.set("lump", "games")
     root.set("updated_at", _now_iso())
+    day_iso = day.isoformat()
 
     # Provider IDs are stable across date/time/opponent changes, but namespaced.
     def identity(game):
-        league = str(game.get("league") or "NHL").upper()
-        provider = provider_for_game(game)
-        gid = str(game.get("id") or game.get("gameId") or "")
-        return (league, provider, gid) if gid else None
+        return game_identity({**game, "date": game.get("date") or day_iso})
     incoming = {identity(g) for g in games if identity(g)}
     for old_day in root.findall("day"):
         for old in list(old_day.findall("game")):
@@ -257,7 +255,6 @@ def write_games_day_xml(*, season: str, day: dt.date, games: list[dict[str, Any]
         unique[identity(game) or ("anonymous", index)] = game
     games = list(unique.values())
 
-    day_iso = day.isoformat()
     for node in list(root.findall("day")):
         if node.get("date") == day_iso:
             root.remove(node)
@@ -349,6 +346,7 @@ def read_games_day_xml(*, season: str, day: dt.date) -> list[dict[str, Any]]:
             if home_name:
                 home["name"] = {"default": home_name}
         row: dict[str, Any] = {
+            "date": day.isoformat(),
             "id": _to_int(game.get("id")) or _to_text(game.get("id")),
             "league": _to_text(game.get("league")),
             "provider": _to_text(game.get("provider") or game.get("sourceProvider")),

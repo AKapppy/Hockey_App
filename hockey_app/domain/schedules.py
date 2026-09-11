@@ -10,9 +10,15 @@ def provider_for_game(game):
 
 def game_identity(game):
     gid = str(game.get('id') or game.get('gameId') or '')
-    if not gid or gid == '0':
-        return None
-    return (str(game.get('league') or 'NHL').upper(), provider_for_game(game), gid)
+    league = str(game.get('league') or 'NHL').upper()
+    if gid and gid != '0':
+        return (league, provider_for_game(game), gid)
+    away, home = _team(game, 'away'), _team(game, 'home')
+    start = str(game.get('startTimeUTC') or game.get('startUtc') or game.get('startTime') or '').strip()
+    day = str(game.get('date') or game.get('gameDate') or '').strip()[:10]
+    if not day and start:
+        day = start[:10]
+    return (league, provider_for_game(game), 'fallback', away, home, day, start) if away and home and day else None
 
 
 def _team(game, side):

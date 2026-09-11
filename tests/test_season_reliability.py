@@ -38,7 +38,8 @@ class SeasonReliabilityTests(unittest.TestCase):
         self.assertEqual(len(games), 1344)
         self.assertEqual(set(Counter(g['homeTeam']['abbrev'] for g in games).values()), {42})
         self.assertEqual(set(Counter(g['awayTeam']['abbrev'] for g in games).values()), {42})
-        self.assertEqual(games_per_team('NHL', '2026-27', schedule=games, complete=True), 84)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'HOCKEY_CACHE_DIR': tmp}):
+            self.assertEqual(games_per_team('NHL', '2026-27', schedule=games, complete=True), 84)
 
     def test_official_nhl_fixture(self):
         import json
@@ -46,7 +47,8 @@ class SeasonReliabilityTests(unittest.TestCase):
         regular = [g for g in rows if g['gameType'] == 2]
         self.assertEqual(len(regular), 1344)
         self.assertEqual(sum(g['gameType'] == 1 for g in rows), 65)
-        self.assertEqual(games_per_team('NHL', '2026-27', schedule=regular, complete=True), 84)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'HOCKEY_CACHE_DIR': tmp}):
+            self.assertEqual(games_per_team('NHL', '2026-27', schedule=regular, complete=True), 84)
         for side in ('homeTeam', 'awayTeam'):
             self.assertEqual(set(Counter(g[side]['abbrev'] for g in regular).values()), {42})
         self.assertEqual({(g['awayTeam']['abbrev'], g['homeTeam']['abbrev']) for g in regular if g['date'] == '2026-09-29'}, {('FLA', 'CAR'), ('MTL', 'TOR'), ('NYR', 'BOS'), ('VAN', 'EDM'), ('CHI', 'VGK')})
