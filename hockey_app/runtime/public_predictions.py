@@ -5,6 +5,7 @@ from hockey_app.domain.seasons import nhl_game_type
 import datetime as dt
 import math
 import random
+import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,20 @@ PUBLIC_STRENGTH_SHRINK = 0.72
 PUBLIC_STRENGTH_FULL_WEIGHT_GAMES = 35
 PUBLIC_LOGIT_SCALE = 0.95
 PUBLIC_MODEL_CACHE_VERSION = 6
+PUBLIC_MODEL_VERSION = "nhl-elo-prior-v7"
+def _load_model_params() -> dict[str, float]:
+    defaults = {"home_win": 0.54, "elo_scale": 400.0, "prior_games": 24.0, "ot_base": 0.23,
+                "k": 12.0, "home_advantage_elo": 30.0, "prior_carry": 0.65}
+    try:
+        saved = json.loads((Path(__file__).resolve().parents[1] / "model_params.json").read_text(encoding="utf-8"))
+        for key in defaults:
+            if key in saved: defaults[key] = float(saved[key])
+    except (OSError, ValueError, TypeError):
+        pass
+    return defaults
+
+
+PUBLIC_MODEL_PARAMS = _load_model_params()
 
 
 @dataclass
@@ -48,6 +63,7 @@ class TeamState:
     goal_diff: int = 0
     games_played: int = 0
     strength: float = 0.0
+    prior_strength: float = 0.0
 
     def clone(self) -> "TeamState":
         return TeamState(**self.__dict__)
@@ -166,6 +182,8 @@ def _empty_tables(day: dt.date) -> dict[str, pd.DataFrame]:
 
 
 def _load_games_from_xml(season: str) -> list[dict[str, Any]]:
+    from hockey_app.domain.teams import canon_team_code_for_season, nhl_team_names
+    active_names = nhl_team_names(season)
     path = _games_xml_path(season)
     if not path.exists():
         return []
@@ -185,9 +203,9 @@ def _load_games_from_xml(season: str) -> list[dict[str, Any]]:
             league_u = str(g.get("league") or "NHL").upper().strip()
             if league_u and league_u != "NHL":
                 continue
-            away = canon_team_code(str(g.get("away_code") or "").upper().strip())
-            home = canon_team_code(str(g.get("home_code") or "").upper().strip())
-            if away not in TEAM_NAMES or home not in TEAM_NAMES:
+            away = canon_team_code_for_season(str(g.get("away_code") or "").upper().strip(), season)
+            home = canon_team_code_for_season(str(g.get("home_code") or "").upper().strip(), season)
+            if away not in active_names or home not in active_names:
                 continue
             row = {
                 "id": _safe_int(g.get("id"), default=0),
@@ -229,13 +247,18 @@ def _dedupe_games(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(by_key.values())
 
 
-def _blank_team_states() -> dict[str, TeamState]:
+def _blank_team_states(season: str | None = None) -> dict[str, TeamState]:
+    from hockey_app.domain.teams import nhl_team_names
+    from hockey_app.services.baselines import preseason_strength_prior
+    selected = season or "2025-2026"
+    priors = preseason_strength_prior(selected)
     out: dict[str, TeamState] = {}
-    for code in sorted(TEAM_NAMES.keys()):
+    for code in sorted(nhl_team_names(selected)):
         out[code] = TeamState(
             code=code,
-            conference=str(TEAM_TO_CONF.get(code, "East")),
-            division=str(TEAM_TO_DIV.get(code, "Metro")),
+            conference=str(TEAM_TO_CONF.get("UTA" if code == "ARI" else code, "East")),
+            division=str(TEAM_TO_DIV.get("UTA" if code == "ARI" else code, "Metro")),
+            prior_strength=float(priors.get(code, 0.0)),
         )
     return out
 
@@ -330,10 +353,10 @@ def _zscore_by_team(values: dict[str, float]) -> dict[str, float]:
     return {k: (float(v) - mean) / std for k, v in values.items()}
 
 
-def _estimate_team_strengths(teams: dict[str, TeamState]) -> None:
+def _estimate_team_strengths(teams: dict[str, TeamState], priors: dict[str, float] | None = None) -> None:
     ppct: dict[str, float] = {}
     gdpg: dict[str, float] = {}
-    goalie: dict[str, float] = {}
+    defense: dict[str, float] = {}
 
     ga_values: list[float] = []
     for t in teams.values():
@@ -346,31 +369,28 @@ def _estimate_team_strengths(teams: dict[str, TeamState]) -> None:
         ppct[code] = float(t.points) / float(2 * gp)
         gdpg[code] = float(t.goal_diff) / float(gp)
         ga_pg = float(t.goals_against) / float(gp)
-        goalie[code] = league_ga_avg - ga_pg
+        defense[code] = league_ga_avg - ga_pg
 
     ppct_z = _zscore_by_team(ppct)
     gdpg_z = _zscore_by_team(gdpg)
-    goalie_z = _zscore_by_team(goalie)
+    defense_z = _zscore_by_team(defense)
     for code, t in teams.items():
-        gp_confidence = _clamp(
-            float(t.games_played) / float(max(1, PUBLIC_STRENGTH_FULL_WEIGHT_GAMES)),
-            0.0,
-            1.0,
-        )
-        t.strength = float(PUBLIC_STRENGTH_SHRINK) * gp_confidence * (
+        current_weight = float(t.games_played) / float(t.games_played + PUBLIC_MODEL_PARAMS["prior_games"])
+        current = float(PUBLIC_STRENGTH_SHRINK) * (
             0.17 * float(ppct_z.get(code, 0.0))
             + 0.54 * float(gdpg_z.get(code, 0.0))
-            + 0.29 * float(goalie_z.get(code, 0.0))
+            + 0.29 * float(defense_z.get(code, 0.0))
         )
+        prior = float((priors or {}).get(code, t.prior_strength))
+        t.strength = current_weight * current + (1.0 - current_weight) * prior
 
 
 def _regular_game_probs(game: RemainingGame, teams: dict[str, TeamState]) -> tuple[float, float]:
     home = teams[game.home]
     away = teams[game.away]
     edge = float(home.strength) - float(away.strength)
-    if game.days_out > 0:
-        edge *= 0.5 ** (float(game.days_out) / 30.0)
-    logit = float(PUBLIC_LOGIT_SCALE) * edge + math.log(0.54 / 0.46)
+    home_logit = math.log(10.0) * PUBLIC_MODEL_PARAMS["home_advantage_elo"] / PUBLIC_MODEL_PARAMS["elo_scale"]
+    logit = float(PUBLIC_LOGIT_SCALE) * edge + home_logit
     p_home = _clamp(_sigmoid(logit), 0.01, 0.99)
     closeness = math.exp(-3.0 * abs(edge))
     p_ot = _clamp(0.23 + 0.04 * closeness, 0.18, 0.28)
@@ -379,7 +399,8 @@ def _regular_game_probs(game: RemainingGame, teams: dict[str, TeamState]) -> tup
 
 def _playoff_game_home_win_prob(home: str, away: str, teams: dict[str, TeamState]) -> float:
     edge = float(teams[home].strength) - float(teams[away].strength)
-    logit = float(PUBLIC_LOGIT_SCALE) * edge + math.log(0.54 / 0.46)
+    home_logit = math.log(10.0) * PUBLIC_MODEL_PARAMS["home_advantage_elo"] / PUBLIC_MODEL_PARAMS["elo_scale"]
+    logit = float(PUBLIC_LOGIT_SCALE) * edge + home_logit
     return _clamp(_sigmoid(logit), 0.01, 0.99)
 
 
@@ -726,7 +747,7 @@ def _build_sim_inputs(
     bool,
     dict[tuple[str, str], dict[str, int]],
 ]:
-    teams = _blank_team_states()
+    teams = _blank_team_states(season)
     h2h_points: dict[tuple[str, str], int] = {}
     h2h_games: dict[tuple[str, str], int] = {}
     rows = _dedupe_games(_load_games_from_xml(season))

@@ -840,11 +840,26 @@ def populate_playoff_picture_tab(
         date_lbl.configure(text=f"{day.day} {day.strftime('%B %Y')}")
         seed_day = regular_season_reference_day(day, league=league_u)
         pts = points_snapshot(points_df, seed_day)
+        preseason_baseline = False
+        if league_u == "NHL" and not any(v > 0 for v in pts.values()):
+            from hockey_app.services.baselines import previous_regular_season_baseline
+            baseline = previous_regular_season_baseline(SEASON)
+            prior = baseline.get("teams", {}) if isinstance(baseline, dict) else {}
+            if prior:
+                preseason_baseline = True
+                pts = {code: 0.0 for code in prior}
         if not pts:
             canvas.create_text(20, 20, text="No standings data available.", fill="#d0d0d0", anchor="w")
             canvas.configure(scrollregion=(0, 0, 1200, 400))
             return
         standings = standings_tiebreak_snapshot(seed_day) if league_u == "NHL" else {}
+        if preseason_baseline:
+            standings = {code: {"leagueSequence": row.get("overall_rank", 999),
+                "conferenceSequence": row.get("conference_rank", 999),
+                "divisionSequence": row.get("division_rank", 999), "points": 0, "row": 0, "rw": 0}
+                for code, row in prior.items()}
+            canvas.create_text(20, 30, text="Preseason layout seeded from previous regular-season standings",
+                               fill="#9a9a9a", anchor="w")
 
         league_x = 24
         league_w = 118

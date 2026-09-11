@@ -11,7 +11,7 @@ from urllib.parse import urljoin
 import pandas as pd
 import requests
 
-DATE_IN_NAME = re.compile(r"(?<!\d)(\d{4})[-_](\d{2})[-_](\d{2})(?!\d)")
+DATE_IN_NAME = re.compile(r"(?<!\d)(\d{4})[-_]?(\d{2})[-_]?(\d{2})(?!\d)")
 CSV_HREF = re.compile(r'href="([^"]+\.csv)"', re.IGNORECASE)
 T = TypeVar("T")
 
@@ -142,10 +142,11 @@ def compile_probability_tables(
             continue
 
         df = cast(pd.DataFrame, _retry_deadlock(pd.read_csv, csv_path))
-        if "scenerio" not in df.columns or "teamCode" not in df.columns:
+        scenario_col = "scenario" if "scenario" in df.columns else "scenerio" if "scenerio" in df.columns else None
+        if scenario_col is None or "teamCode" not in df.columns:
             continue
 
-        df_all = df.loc[df["scenerio"] == "ALL"].copy()
+        df_all = df.loc[df[scenario_col].astype(str).str.upper() == "ALL"].copy()
         if df_all.empty:
             continue
 

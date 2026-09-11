@@ -608,10 +608,7 @@ def _record_from_logs(rows: list[dict[str, Any]]) -> tuple[int, int, int]:
 
 
 def _team_stats_row_has_data(row: dict[str, Any]) -> bool:
-    try:
-        return int(row.get("gp") or 0) > 0
-    except Exception:
-        return False
+    return bool(str(row.get("team") or "").strip())
 
 
 def populate_team_stats_tab(
@@ -911,6 +908,11 @@ def populate_team_stats_tab(
             cur_date = dates[-1]
             rows = list(rows_map.get(cur_date) or [])
         rows = [r for r in rows if isinstance(r, dict) and _team_stats_row_has_data(r)]
+        present = {str(r.get("team") or "").upper() for r in rows}
+        for code in _team_order(league_u):
+            if code not in present:
+                rows.append({"team": code, "record": "0-0-0", "gp": 0, "w": 0, "l": 0,
+                             "pts": 0, "gf": 0, "ga": 0, "gd": 0, "p_pct": 0.0, "w_pct": 0.0})
         rows = _rows_sorted(rows)
         state["rows"] = rows
         heat_ranks = _phase_heat_ranks(rows)

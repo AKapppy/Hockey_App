@@ -9,10 +9,17 @@ import os
 import re
 
 BOUNDS = {
+    "2023-2024": {"preseason": "2023-09-23", "regular": "2023-10-10", "regular_end": "2024-04-18", "postseason_start": "2024-04-20", "postseason_end": "2024-06-24"},
+    "2024-2025": {"preseason": "2024-09-21", "regular": "2024-10-04", "regular_end": "2025-04-17", "postseason_start": "2025-04-19", "postseason_end": "2025-06-17"},
     "2025-2026": {"preseason": "2025-09-20", "regular": "2025-10-07", "regular_end": "2026-04-16"},
     "2026-2027": {"preseason": "2026-09-19", "regular": "2026-09-29", "regular_end": "2027-04-10"},
 }
-LENGTHS = {("NHL", "2025-2026"): 82, ("NHL", "2026-2027"): 84, ("PWHL", "2025-2026"): 30}
+LENGTHS = {("NHL", "2023-2024"): 82, ("NHL", "2024-2025"): 82, ("NHL", "2025-2026"): 82, ("NHL", "2026-2027"): 84, ("PWHL", "2025-2026"): 30}
+
+HISTORICAL_NHL_RULES = {
+    "2023-2024": {"games_per_team": 82, "team_count": 32, "total_games": 1312},
+    "2024-2025": {"games_per_team": 82, "team_count": 32, "total_games": 1312},
+}
 
 
 def normalize_season(value):
@@ -63,7 +70,49 @@ def season_metadata():
                     if row.get("playoffs_start"): record.setdefault("postseason_start", row["playoffs_start"])
         except (OSError, csv.Error):
             pass
+    for key, rule in HISTORICAL_NHL_RULES.items():
+        record = records.setdefault(key, {"season": key, "leagues": {}})
+        # These completed-season facts are validated and immutable. A stale local
+        # discovery cache must never replace them with a partial January window.
+        record.update(BOUNDS[key])
+        record.setdefault("leagues", {}).setdefault(
+            "NHL", {**rule, "schedule_complete": True, "source": "validated official NHL history"}
+        )
     return records
+
+
+def supported_seasons(*, minimum_start=2023, today=None):
+    """Stable desktop menu choices, independent of the selected child process."""
+    day = today or dt.date.today()
+    natural = day.year if day.month >= 7 else day.year - 1
+    starts = {int(k[:4]) for k in season_metadata() if normalize_season(k)}
+    starts.add(natural)
+    return [f"{year}-{year + 1}" for year in range(max(starts), int(minimum_start) - 1, -1)]
+
+
+def season_date_ranges(season, *, observed_on=None):
+    """Return distinct desktop ranges for schedule, stats and prediction sources."""
+    key = normalize_season(season)
+    record = season_metadata().get(key or "", {})
+    if not key:
+        raise ValueError(f"Invalid season: {season}")
+    year = int(key[:4])
+    parse = lambda field, fallback: dt.date.fromisoformat(record[field]) if record.get(field) else fallback
+    preseason = parse("preseason", dt.date(year, 7, 1))
+    regular = parse("regular", preseason)
+    regular_end = parse("regular_end", dt.date(year + 1, 4, 30))
+    postseason_start = parse("postseason_start", regular_end + dt.timedelta(days=1))
+    postseason_end = parse("postseason_end", regular_end)
+    observation_end = min(observed_on or dt.date.today(), postseason_end)
+    previous = season_metadata().get(f"{year - 1}-{year}", {})
+    previous_end = dt.date.fromisoformat(previous["postseason_end"]) if previous.get("postseason_end") else dt.date(year, 6, 30)
+    return {
+        "schedule": (preseason, postseason_end),
+        "regular": (regular, regular_end),
+        "observation": (preseason, max(preseason, observation_end)),
+        "moneypuck": (previous_end + dt.timedelta(days=1), postseason_end),
+        "postseason": (postseason_start, postseason_end),
+    }
 
 
 def published_seasons():

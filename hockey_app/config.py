@@ -269,12 +269,15 @@ def _season_end_fallback(season: str) -> dt.date:
     return dt.date.today()
 
 
-from hockey_app.domain.seasons import season_metadata
+from hockey_app.domain.seasons import season_date_ranges, season_metadata
 _canonical_season = season_metadata().get(SEASON, {})
-START_DATE = _parse_iso_date(_canonical_season.get("preseason")) or _season_start_fallback(SEASON)
-SEASON_END_DATE = _parse_iso_date(_canonical_season.get("postseason_end")) or _season_end_fallback(SEASON)
+_date_ranges = season_date_ranges(SEASON)
+SCHEDULE_START_DATE, SEASON_END_DATE = _date_ranges["schedule"]
+REGULAR_START_DATE, REGULAR_END_DATE = _date_ranges["regular"]
+MONEYPUCK_START_DATE, MONEYPUCK_END_DATE = _date_ranges["moneypuck"]
+START_DATE = SCHEDULE_START_DATE
 TODAY = dt.date.today()
-END_DATE = min(TODAY, SEASON_END_DATE)
+END_DATE = _date_ranges["observation"][1]
 if END_DATE < START_DATE:
     END_DATE = START_DATE
 SEASON_PROBE_DATE = _season_probe_date(SEASON)
@@ -340,7 +343,19 @@ TAB_TITLES: Dict[str, str] = {
 # ----------------------------
 # Team metadata
 # ----------------------------
-from hockey_app.domain.teams import (TEAM_NAMES, TEAM_CODE_ALIASES, canon_team_code, DIVS_MASTER, WEST_DIVS, TEAM_TO_DIV, TEAM_TO_CONF, division_columns_for_codes)
+from hockey_app.domain.teams import (TEAM_CODE_ALIASES, DIVS_MASTER as _CURRENT_DIVS, WEST_DIVS,
+    TEAM_TO_DIV as _CURRENT_TEAM_TO_DIV, TEAM_TO_CONF as _CURRENT_TEAM_TO_CONF,
+    canon_team_code_for_season, nhl_team_names)
+TEAM_NAMES = nhl_team_names(SEASON)
+canon_team_code = lambda code: canon_team_code_for_season(code, SEASON)
+DIVS_MASTER = {name: [("ARI" if SEASON.startswith("2023-") and c == "UTA" else c) for c in codes]
+               for name, codes in _CURRENT_DIVS.items()}
+TEAM_TO_DIV = {c: d for d, codes in DIVS_MASTER.items() for c in codes}
+TEAM_TO_CONF = {c: ("West" if d in WEST_DIVS else "East") for c, d in TEAM_TO_DIV.items()}
+
+def division_columns_for_codes(codes: set[str]) -> dict[str, list[str]]:
+    return {div: sorted([c for c in members if c in codes], key=lambda c: (TEAM_NAMES.get(c, c), c))
+            for div, members in DIVS_MASTER.items()}
 
 
 # ----------------------------

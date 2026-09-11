@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from typing import Any, Dict
 
-from hockey_app.config import END_DATE, SEASON, SEASON_PROBE_DATE, START_DATE, TIMEZONE
+from hockey_app.config import END_DATE, SEASON, SEASON_END_DATE, SEASON_PROBE_DATE, START_DATE, TIMEZONE
 from hockey_app.data.cache import DiskCache
 from hockey_app.data.espn_api import ESPNApi
 from hockey_app.data.nhl_api import NHLApi
@@ -44,7 +44,7 @@ def populate_games_tab(
         "logos": logo_bank,
         "season": SEASON,
         "season_start": START_DATE,
-        "season_end": END_DATE,
+        "season_end": SEASON_END_DATE,
         "season_probe_date": SEASON_PROBE_DATE,
         "timezone": TIMEZONE,
         "on_data_refresh": on_data_refresh,

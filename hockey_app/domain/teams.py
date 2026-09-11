@@ -45,6 +45,30 @@ def canon_team_code(code: str) -> str:
     return TEAM_CODE_ALIASES.get(c, c)
 
 
+def canon_team_code_for_season(code: str, season: str) -> str:
+    """Canonical display identity without rewriting historical Arizona."""
+    c = str(code).upper().strip()
+    return "ARI" if str(season).startswith("2023-") and c in {"ARI", "UTA"} else canon_team_code(c)
+
+
+def nhl_team_names(season: str) -> dict[str, str]:
+    names = dict(TEAM_NAMES)
+    if str(season).startswith("2023-"):
+        names.pop("UTA", None)
+        names["ARI"] = "Arizona Coyotes"
+    elif str(season).startswith("2024-"):
+        names["UTA"] = "Utah Hockey Club"
+    return names
+
+
+def nhl_team_identity(season: str, code: str) -> dict[str, object]:
+    canonical = canon_team_code_for_season(code, season)
+    names = nhl_team_names(season)
+    return {"providerId": 53 if canonical == "ARI" else NHL_PROVIDER_IDS.get(canonical),
+            "displayCode": canonical, "displayName": names.get(canonical, canonical),
+            "assetCode": canonical, "franchiseId": "ARI-UTA" if canonical in {"ARI", "UTA"} else canonical}
+
+
 DIVS_MASTER: dict[str, list[str]] = {
     "Pacific": ["ANA", "CGY", "EDM", "LAK", "SEA", "SJS", "VAN", "VGK"],
     "Central": ["CHI", "COL", "DAL", "MIN", "NSH", "STL", "WPG", "UTA"],
@@ -91,14 +115,14 @@ NHL_PROVIDER_IDS = {'ANA': 24, 'BOS': 6, 'BUF': 7, 'CAR': 12, 'CBJ': 29, 'CGY': 
 
 def team_registry(season):
     rows = []
-    for league, names in (("NHL", TEAM_NAMES), ("PWHL", pwhl_team_names(season))):
+    for league, names in (("NHL", nhl_team_names(season)), ("PWHL", pwhl_team_names(season))):
         for code, name in names.items():
             provisional = league == "PWHL" and code in PWHL_EXPANSION_NAMES
             asset_code = "MON" if league == "PWHL" and code == "MTL" else code
             provider_code = asset_code if league == "PWHL" else code
             rows.append({"league": league, "code": code, "name": name,
                          "aliases": [name.replace("Montréal", "Montreal"), *PWHL_PROVIDER_ALIASES.get(code, ())] if league == "PWHL" else [name.replace("Montréal", "Montreal")],
-                         "providerId": NHL_PROVIDER_IDS.get(code) if league == "NHL" else None,
+                         "providerId": (53 if code == "ARI" else NHL_PROVIDER_IDS.get(code)) if league == "NHL" else None,
                          "providerCode": provider_code if not provisional else None, "assetCode": asset_code if not provisional else None,
                          "activeSeason": season, "provisionalBrand": provisional,
                          "logo": None if provisional else f"assets/{league.lower()}_logos/{asset_code}.png"})

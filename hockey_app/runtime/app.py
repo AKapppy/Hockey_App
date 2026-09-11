@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from hockey_app.domain.colors import build_team_color_map
-from hockey_app.domain.teams import TEAM_NAMES, canon_team_code, division_columns_for_codes
+from hockey_app.config import TEAM_NAMES, canon_team_code, division_columns_for_codes
 from hockey_app.data.paths import imgs_dir, sims_dir
 from hockey_app.data.xml_cache import read_predictions_tables_xml, write_predictions_tables_xml
 from hockey_app.runtime import logos as logosvc
@@ -22,6 +22,7 @@ _settings: RuntimeSettings = default_settings()
 SEASON = _settings["season"]
 START_DATE = _settings["start_date"]
 END_DATE = _settings["end_date"]
+from hockey_app.config import MONEYPUCK_END_DATE, MONEYPUCK_START_DATE
 
 URL_SIMULATIONS = _settings["url_simulations"]
 HEADERS = dict(_settings["headers"])
@@ -90,7 +91,7 @@ def _empty_probability_tables(start_date: dt.date, end_date: dt.date) -> dict[st
     codes = sorted(TEAM_NAMES.keys())
     return {
         metric_key: pd.DataFrame(
-            {col: [0.0 for _ in codes] for col in cols},
+            {col: [float("nan") for _ in codes] for col in cols},
             index=codes,
             dtype="float64",
         )
@@ -124,17 +125,18 @@ def launch_predictions_ui(
     from hockey_app.ui.app_window import launch_predictions_ui_window
 
     def _refresh_predictions_tables() -> dict[str, pd.DataFrame]:
-        errs = download_missing_simulations(START_DATE, END_DATE, SIMS_DIR)
+        prediction_end = min(dt.date.today(), MONEYPUCK_END_DATE)
+        errs = download_missing_simulations(MONEYPUCK_START_DATE, prediction_end, SIMS_DIR)
         if errs:
             print("ERRORS occurred during background simulation download:")
             for msg in errs:
                 print(f"- {msg}")
-        fresh_tables = compile_probability_tables(SIMS_DIR, START_DATE, END_DATE)
+        fresh_tables = compile_probability_tables(SIMS_DIR, MONEYPUCK_START_DATE, prediction_end)
         try:
             write_predictions_tables_xml(
                 season=SEASON,
-                start=START_DATE,
-                end=END_DATE,
+                start=MONEYPUCK_START_DATE,
+                end=prediction_end,
                 tables=fresh_tables,
             )
         except Exception:
@@ -144,7 +146,7 @@ def launch_predictions_ui(
     launch_predictions_ui_window(
         tables,
         season=SEASON,
-        start_date=START_DATE,
+        start_date=MONEYPUCK_START_DATE,
         images_dir=IMAGES_DIR,
         tab_order=TAB_ORDER,
         tab_labels=TAB_LABELS,
@@ -175,14 +177,15 @@ def main() -> None:
     prof.mark("ensure_dir_writable")
 
     tables = read_predictions_tables_xml(season=SEASON, metrics=TAB_ORDER)
-    expected_last_col = f"{END_DATE.month}/{END_DATE.day}"
+    prediction_end = min(dt.date.today(), MONEYPUCK_END_DATE)
+    expected_last_col = f"{prediction_end.month}/{prediction_end.day}"
     has_complete_xml = bool(tables) and all(
         k in tables and not tables[k].empty and len(tables[k].columns) > 0 and str(tables[k].columns[-1]) == expected_last_col
         for k in TAB_ORDER
     )
 
     if not has_complete_xml and not tables:
-        tables = _empty_probability_tables(START_DATE, END_DATE)
+        tables = _empty_probability_tables(MONEYPUCK_START_DATE, prediction_end)
         prof.mark("prepare_prediction_placeholders")
     else:
         prof.mark("load_predictions_tables_xml")

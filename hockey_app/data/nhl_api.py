@@ -153,6 +153,14 @@ class NHLApi:
         gracefully when some fields are absent.
         """
         d = probe_date or date.today()
+        from hockey_app.domain.seasons import season_metadata
+        season = f"{d.year - 1}-{d.year}" if d.month < 7 else f"{d.year}-{d.year + 1}"
+        canonical = season_metadata().get(season, {})
+        if canonical.get("preseason") and canonical.get("regular") and canonical.get("regular_end") and canonical.get("postseason_end"):
+            parse = lambda key: date.fromisoformat(str(canonical[key])) if canonical.get(key) else None
+            return SeasonBoundaries(parse("preseason"), parse("regular"), parse("regular_end"),
+                                    parse("postseason_start"), parse("postseason_end"),
+                                    parse("preseason"), parse("postseason_end"))
         payloads: list[dict[str, Any]] = []
 
         for fetch in (self.schedule_by_date, self.schedule_calendar):

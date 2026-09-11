@@ -251,11 +251,8 @@ def launch_predictions_ui_window(
         return int(resolve_season(d).season[:4])
 
     def _season_choices(min_start: int = 2023) -> list[str]:
-        current_start = _season_start_year(season)
-        if current_start is None:
-            current_start = _default_current_season_start()
-        top_start = max(current_start, _default_current_season_start())
-        return [f"{y}-{y + 1}" for y in range(top_start, min_start - 1, -1)]
+        from hockey_app.domain.seasons import supported_seasons
+        return supported_seasons(minimum_start=min_start)
 
     pwhl_codes = set(PWHL_TEAM_ORDER)
 
