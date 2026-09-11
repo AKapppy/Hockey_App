@@ -201,6 +201,21 @@ def _empty_stats(teams: list[str]) -> dict[str, dict[str, float]]:
     }
 
 
+def _game_codes(league: str, game: dict[str, Any]) -> tuple[str, str]:
+    away, home = game.get("awayTeam") or {}, game.get("homeTeam") or {}
+    norm = _norm_pwhl_code if str(league).upper() == "PWHL" else canon_team_code
+    return norm(str(away.get("abbrev") or away.get("abbreviation") or "")), norm(str(home.get("abbrev") or home.get("abbreviation") or ""))
+
+
+def _postseason_team_codes(league: str, games, active_teams) -> list[str]:
+    active = set(active_teams); participants = set()
+    for game in games:
+        ac, hc = _game_codes(league, game)
+        if ac in active: participants.add(ac)
+        if hc in active: participants.add(hc)
+    return [team for team in active_teams if team in participants]
+
+
 def _update_game_stats(league: str, stats: dict[str, dict[str, float]], game: dict[str, Any]) -> None:
     away = game.get("awayTeam") or {}
     home = game.get("homeTeam") or {}
@@ -456,16 +471,29 @@ def _compute_phase_rows(
         start, end = phase_ranges[ph]
         if end < start:
             continue
+        games_by_date: dict[dt.date, list[dict[str, Any]]] = {}
+        playoff_teams: set[str] = set()
+        scan_day = start
+        while scan_day <= end:
+            day_games = _load_pwhl_games_for_date(pwhl_api, scan_day) if league_u == "PWHL" else _load_nhl_games_for_date(nhl_api, scan_day)
+            games_by_date[scan_day] = day_games
+            if ph == "postseason":
+                for game in day_games:
+                    ac, hc = _game_codes(league_u, game)
+                    if ac in teams: playoff_teams.add(ac)
+                    if hc in teams: playoff_teams.add(hc)
+            scan_day += dt.timedelta(days=1)
+        phase_teams = _postseason_team_codes(league_u, [g for games in games_by_date.values() for g in games], teams) if ph == "postseason" and playoff_teams else teams
         stats = _empty_stats(teams)
         dates: list[dt.date] = []
         rows_by_date: dict[dt.date, list[dict[str, Any]]] = {}
         d = start
         while d <= end:
-            games = _load_pwhl_games_for_date(pwhl_api, d) if league_u == "PWHL" else _load_nhl_games_for_date(nhl_api, d)
+            games = games_by_date.get(d, [])
             for g in games:
                 _update_game_stats(league_u, stats, g)
             rows: list[dict[str, Any]] = []
-            for t in teams:
+            for t in phase_teams:
                 s = stats[t]
                 gp = int(s["gp"])
                 rw = int(s["w"])

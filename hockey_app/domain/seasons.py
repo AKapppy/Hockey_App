@@ -9,9 +9,9 @@ import os
 import re
 
 BOUNDS = {
-    "2023-2024": {"preseason": "2023-09-23", "regular": "2023-10-10", "regular_end": "2024-04-18", "postseason_start": "2024-04-20", "postseason_end": "2024-06-24"},
-    "2024-2025": {"preseason": "2024-09-21", "regular": "2024-10-04", "regular_end": "2025-04-17", "postseason_start": "2025-04-19", "postseason_end": "2025-06-17"},
-    "2025-2026": {"preseason": "2025-09-20", "regular": "2025-10-07", "regular_end": "2026-04-16"},
+    "2023-2024": {"preseason": "2023-09-23", "regular": "2023-10-10", "regular_end": "2024-04-18", "postseason_start": "2024-04-20", "actual_postseason_end": "2024-06-24", "scheduled_postseason_end": "2024-06-24", "postseason_end": "2024-06-24"},
+    "2024-2025": {"preseason": "2024-09-21", "regular": "2024-10-04", "regular_end": "2025-04-17", "postseason_start": "2025-04-19", "actual_postseason_end": "2025-06-17", "scheduled_postseason_end": "2025-06-17", "postseason_end": "2025-06-17"},
+    "2025-2026": {"preseason": "2025-09-20", "regular": "2025-10-07", "regular_end": "2026-04-16", "postseason_start": "2026-04-18", "actual_postseason_end": "2026-06-14", "scheduled_postseason_end": "2026-06-17", "postseason_end": "2026-06-14"},
     "2026-2027": {"preseason": "2026-09-19", "regular": "2026-09-29", "regular_end": "2027-04-10"},
 }
 LENGTHS = {("NHL", "2023-2024"): 82, ("NHL", "2024-2025"): 82, ("NHL", "2025-2026"): 82, ("NHL", "2026-2027"): 84, ("PWHL", "2025-2026"): 30}
@@ -19,6 +19,7 @@ LENGTHS = {("NHL", "2023-2024"): 82, ("NHL", "2024-2025"): 82, ("NHL", "2025-202
 HISTORICAL_NHL_RULES = {
     "2023-2024": {"games_per_team": 82, "team_count": 32, "total_games": 1312},
     "2024-2025": {"games_per_team": 82, "team_count": 32, "total_games": 1312},
+    "2025-2026": {"games_per_team": 82, "team_count": 32, "total_games": 1312},
 }
 
 
@@ -102,16 +103,15 @@ def season_date_ranges(season, *, observed_on=None):
     regular = parse("regular", preseason)
     regular_end = parse("regular_end", dt.date(year + 1, 4, 30))
     postseason_start = parse("postseason_start", regular_end + dt.timedelta(days=1))
-    postseason_end = parse("postseason_end", regular_end)
+    postseason_end = parse("actual_postseason_end", parse("postseason_end", regular_end))
     observation_end = min(observed_on or dt.date.today(), postseason_end)
-    previous = season_metadata().get(f"{year - 1}-{year}", {})
-    previous_end = dt.date.fromisoformat(previous["postseason_end"]) if previous.get("postseason_end") else dt.date(year, 6, 30)
     return {
         "schedule": (preseason, postseason_end),
         "regular": (regular, regular_end),
         "observation": (preseason, max(preseason, observation_end)),
-        "moneypuck": (previous_end + dt.timedelta(days=1), postseason_end),
+        "moneypuck": (dt.date(year, 9, 1), dt.date(year + 1, 6, 30)),
         "postseason": (postseason_start, postseason_end),
+        "terminal_predictions": (postseason_end + dt.timedelta(days=1), postseason_end + dt.timedelta(days=1)),
     }
 
 
@@ -124,7 +124,7 @@ def update_season_metadata(season, *, dates=None, league=None, rule=None, source
     if not key:
         raise ValueError(f"Invalid season: {season}")
     records = season_metadata(); record = records.setdefault(key, {"season": key, "leagues": {}})
-    for field in ("preseason", "regular", "regular_end", "postseason_start", "postseason_end"):
+    for field in ("preseason", "regular", "regular_end", "postseason_start", "postseason_end", "actual_postseason_end", "scheduled_postseason_end"):
         if dates and dates.get(field):
             record[field] = str(dates[field])
     if league and rule is not None:

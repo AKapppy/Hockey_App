@@ -32,7 +32,7 @@ PUBLIC_MODEL_BACKFILL_WORK_BUDGET = 9000
 PUBLIC_STRENGTH_SHRINK = 0.72
 PUBLIC_STRENGTH_FULL_WEIGHT_GAMES = 35
 PUBLIC_LOGIT_SCALE = 0.95
-PUBLIC_MODEL_CACHE_VERSION = 6
+PUBLIC_MODEL_CACHE_VERSION = 8
 PUBLIC_MODEL_VERSION = "nhl-elo-prior-v7"
 def _load_model_params() -> dict[str, float]:
     defaults = {"home_win": 0.54, "elo_scale": 400.0, "prior_games": 24.0, "ot_base": 0.23,
@@ -247,11 +247,11 @@ def _dedupe_games(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(by_key.values())
 
 
-def _blank_team_states(season: str | None = None) -> dict[str, TeamState]:
+def _blank_team_states(season: str | None = None, *, load_priors: bool = True) -> dict[str, TeamState]:
     from hockey_app.domain.teams import nhl_team_names
     from hockey_app.services.baselines import preseason_strength_prior
     selected = season or "2025-2026"
-    priors = preseason_strength_prior(selected)
+    priors = preseason_strength_prior(selected) if load_priors else {}
     out: dict[str, TeamState] = {}
     for code in sorted(nhl_team_names(selected)):
         out[code] = TeamState(
@@ -1043,6 +1043,8 @@ def _snapshot_probs_for_day(
     )
     if not probs:
         return {}
+    from hockey_app.domain.postseason import condition_probabilities
+    probs = condition_probabilities(probs, _load_games_from_xml(season), day)
 
     try:
         cache.set_json(
@@ -1068,7 +1070,9 @@ def build_public_probability_tables(
     end_date: dt.date | None = None,
 ) -> dict[str, pd.DataFrame]:
     live_day = today or dt.date.today()
-    day_end = end_date or live_day
+    from hockey_app.domain.seasons import season_date_ranges
+    terminal_day = season_date_ranges(season)["terminal_predictions"][0]
+    day_end = end_date or (terminal_day if terminal_day < live_day else live_day)
     day_start = start_date or _season_start_from_label(season, day_end)
     if day_end < day_start:
         day_start = day_end
@@ -1081,6 +1085,11 @@ def build_public_probability_tables(
     probs_by_day: dict[dt.date, dict[str, dict[str, float]]] = {}
 
     for snap_day in days:
+        if snap_day == terminal_day:
+            _terminal_date, terminal = terminal_snapshot_for_season(season)
+            if terminal:
+                probs_by_day[snap_day] = terminal
+                continue
         use_sims = PUBLIC_MODEL_SIMS if snap_day == day_end else PUBLIC_MODEL_SIMS_BACKFILL
         probs = _snapshot_probs_for_day(
             season,
@@ -1095,3 +1104,16 @@ def build_public_probability_tables(
     if not probs_by_day:
         return _empty_tables_for_days(days)
     return _tables_from_daily_probs(days, probs_by_day)
+
+
+def terminal_snapshot_for_season(season: str):
+    from hockey_app.domain.postseason import actual_last_played_postseason_game, completed_outcomes_for_season, terminal_outcomes
+    from hockey_app.domain.seasons import season_date_ranges
+    rows = _load_games_from_xml(season)
+    last = actual_last_played_postseason_game(rows)
+    active = _blank_team_states(season, load_priors=False)
+    if last:
+        return last + dt.timedelta(days=1), terminal_outcomes(rows, active)
+    fallback = completed_outcomes_for_season(season, active)
+    terminal = season_date_ranges(season)["terminal_predictions"][0]
+    return (terminal, fallback) if fallback else (None, {})

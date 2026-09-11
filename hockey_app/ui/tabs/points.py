@@ -74,6 +74,18 @@ def _date_labels(start: dt.date, end: dt.date) -> list[tuple[dt.date, str]]:
     return out
 
 
+def _extend_frozen_regular_values(df: pd.DataFrame, regular_end: dt.date, timeline_end: dt.date) -> pd.DataFrame:
+    """Carry final standings points through playoffs without counting playoff games."""
+    if df.empty or timeline_end <= regular_end: return df
+    out = df.copy(); last = out.iloc[:, -1]
+    day = regular_end + dt.timedelta(days=1)
+    while day <= timeline_end:
+        out[f"{day.month}/{day.day}"] = last
+        day += dt.timedelta(days=1)
+    out.attrs["postseason_semantics"] = "frozen_regular_season_value"
+    return out
+
+
 def _is_final(g: dict[str, Any]) -> bool:
     s = str(g.get("gameState") or g.get("gameStatus") or "").upper()
     return s in {"FINAL", "OFF"} or s.startswith("FINAL")
@@ -467,6 +479,9 @@ def populate_points_tab(
     except Exception:
         pass
 
+    timeline_end = min(today, getattr(bounds, "playoffs_end", None) or end)
+    df = _extend_frozen_regular_values(df, end, timeline_end)
+
     def _render_regular() -> dict[str, Callable[[], None]]:
         return render_heatmap_with_graph(
             parent,
@@ -511,6 +526,7 @@ def populate_points_tab(
             )
         except Exception:
             pass
+        df = _extend_frozen_regular_values(df, end, timeline_end)
         ctrl_ref = _render_regular()
 
     def reset() -> None:

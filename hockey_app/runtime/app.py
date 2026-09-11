@@ -11,6 +11,8 @@ from hockey_app.data.paths import imgs_dir, sims_dir
 from hockey_app.data.xml_cache import read_predictions_tables_xml, write_predictions_tables_xml
 from hockey_app.runtime import logos as logosvc
 from hockey_app.runtime import pipeline as pipesvc
+from hockey_app.runtime.public_predictions import terminal_snapshot_for_season
+from hockey_app.services.simulations import append_terminal_outcome
 from hockey_app.runtime.prof import StartupProfiler
 from hockey_app.runtime.settings import default_settings
 from hockey_app.runtime.storage import ensure_dir_writable
@@ -23,6 +25,11 @@ SEASON = _settings["season"]
 START_DATE = _settings["start_date"]
 END_DATE = _settings["end_date"]
 from hockey_app.config import MONEYPUCK_END_DATE, MONEYPUCK_START_DATE
+from hockey_app.domain.seasons import season_date_ranges
+
+def _prediction_ui_end() -> dt.date:
+    terminal = season_date_ranges(SEASON)["terminal_predictions"][0]
+    return terminal if terminal < dt.date.today() else min(dt.date.today(), MONEYPUCK_END_DATE)
 
 URL_SIMULATIONS = _settings["url_simulations"]
 HEADERS = dict(_settings["headers"])
@@ -132,11 +139,16 @@ def launch_predictions_ui(
             for msg in errs:
                 print(f"- {msg}")
         fresh_tables = compile_probability_tables(SIMS_DIR, MONEYPUCK_START_DATE, prediction_end)
+        terminal_day, outcomes = terminal_snapshot_for_season(SEASON)
+        fresh_tables = append_terminal_outcome(fresh_tables, terminal_day, outcomes)
+        ui_end = _prediction_ui_end()
+        keep = max(1, (ui_end - MONEYPUCK_START_DATE).days + 1)
+        fresh_tables = {key: frame.iloc[:, :keep] for key, frame in fresh_tables.items()}
         try:
             write_predictions_tables_xml(
                 season=SEASON,
                 start=MONEYPUCK_START_DATE,
-                end=prediction_end,
+                end=ui_end,
                 tables=fresh_tables,
             )
         except Exception:
@@ -177,12 +189,18 @@ def main() -> None:
     prof.mark("ensure_dir_writable")
 
     tables = read_predictions_tables_xml(season=SEASON, metrics=TAB_ORDER)
-    prediction_end = min(dt.date.today(), MONEYPUCK_END_DATE)
+    prediction_end = _prediction_ui_end()
     expected_last_col = f"{prediction_end.month}/{prediction_end.day}"
     has_complete_xml = bool(tables) and all(
         k in tables and not tables[k].empty and len(tables[k].columns) > 0 and str(tables[k].columns[-1]) == expected_last_col
         for k in TAB_ORDER
     )
+    terminal_required = season_date_ranges(SEASON)["terminal_predictions"][0] < dt.date.today()
+    if has_complete_xml and terminal_required:
+        has_complete_xml = all(
+            set(pd.to_numeric(tables[k].iloc[:, -1], errors="coerce").dropna().tolist()).issubset({0.0, 1.0})
+            for k in TAB_ORDER
+        )
 
     if not has_complete_xml and not tables:
         tables = _empty_probability_tables(MONEYPUCK_START_DATE, prediction_end)

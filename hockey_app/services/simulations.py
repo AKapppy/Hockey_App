@@ -173,3 +173,19 @@ def compile_probability_tables(
         tables[out_key] = table
 
     return tables
+
+
+def append_terminal_outcome(tables, terminal_date, outcomes):
+    """Append the factual next-day result to provider tables with provenance."""
+    if not terminal_date or not outcomes:
+        return tables
+    col = md_label(terminal_date)
+    mapping = {"madeplayoffs": "make_playoffs", "round2": "round2", "round3": "round3", "round4": "finals", "woncup": "cup"}
+    for table_key, metric in mapping.items():
+        table = tables.get(table_key)
+        if table is None: continue
+        for code in outcomes:
+            if code not in table.index: table.loc[code] = float("nan")
+            table.loc[code, col] = float(outcomes[code][metric])
+        table.attrs.setdefault("column_sources", {})[col] = "final_result"
+    return tables
