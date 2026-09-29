@@ -33,6 +33,36 @@ final class HomeViewModel: ObservableObject {
         }) ?? snapshot?.upcomingGames.first
     }
 
+    var availableGameDates: [Date] {
+        let calendar = Calendar.autoupdatingCurrent
+        let days = games.map {
+            calendar.startOfDay(for: $0.startTime)
+        }
+
+        return Array(Set(days)).sorted()
+    }
+
+    func games(
+        on date: Date,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> [HockeyGame] {
+        games.filter {
+            calendar.isDate($0.startTime, inSameDayAs: date)
+        }
+    }
+
+    func nearestGameDate(
+        to date: Date,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> Date? {
+        let target = calendar.startOfDay(for: date)
+
+        return availableGameDates.min { lhs, rhs in
+            abs(lhs.timeIntervalSince(target))
+                < abs(rhs.timeIntervalSince(target))
+        }
+    }
+
     var liveGameCount: Int {
         snapshot?.liveGames.count ?? 0
     }

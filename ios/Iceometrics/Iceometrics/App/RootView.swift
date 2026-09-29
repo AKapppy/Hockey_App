@@ -6,17 +6,65 @@ struct RootView: View {
     var body: some View {
         TabView {
             NavigationStack {
-                HomeView(viewModel: homeViewModel)
+                ScoreboardView(viewModel: homeViewModel)
             }
             .tabItem {
-                Label("Overview", systemImage: "chart.bar.xaxis")
+                Label("Scoreboard", systemImage: "hockey.puck.fill")
             }
 
             NavigationStack {
-                GamesView(viewModel: homeViewModel)
+                FeaturePlaceholderView(
+                    title: "Stats",
+                    systemImage: "chart.bar.xaxis",
+                    message: "Team, game, and player stats will live here."
+                )
             }
             .tabItem {
-                Label("Games", systemImage: "hockey.puck.fill")
+                Label("Stats", systemImage: "chart.bar.xaxis")
+            }
+
+            NavigationStack {
+                FeaturePlaceholderView(
+                    title: "Predictions",
+                    systemImage: "chart.line.uptrend.xyaxis",
+                    message: "MoneyPuck prediction views are coming next."
+                )
+            }
+            .tabItem {
+                Label("Predictions", systemImage: "chart.line.uptrend.xyaxis")
+            }
+
+            NavigationStack {
+                FeaturePlaceholderView(
+                    title: "Predictions 2",
+                    systemImage: "percent",
+                    message: "The second predictions workspace will be added here."
+                )
+            }
+            .tabItem {
+                Label("Predictions 2", systemImage: "percent")
+            }
+
+            NavigationStack {
+                FeaturePlaceholderView(
+                    title: "Models",
+                    systemImage: "function",
+                    message: "Playoff picture and model outputs will be added here."
+                )
+            }
+            .tabItem {
+                Label("Models", systemImage: "function")
+            }
+
+            NavigationStack {
+                FeaturePlaceholderView(
+                    title: "Labs",
+                    systemImage: "flask.fill",
+                    message: "Experimental Iceometrics tools will live here."
+                )
+            }
+            .tabItem {
+                Label("Labs", systemImage: "flask.fill")
             }
         }
     }
