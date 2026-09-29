@@ -14,6 +14,16 @@ nonisolated enum AppEnvironment {
                 successfulFetchOrigin: .fixture
             )
 
+        case .sharedWebSnapshot(let baseURL, let season):
+            return HockeyRepository(
+                service: SharedWebHockeyDataService(
+                    baseURL: baseURL,
+                    season: season
+                ),
+                cache: cache,
+                successfulFetchOrigin: .network
+            )
+
         case .live(let baseURL):
             return HockeyRepository(
                 service: LiveHockeyDataService(

@@ -18,7 +18,8 @@ struct CacheStoreTests {
                 timeIntervalSince1970: 1_700_000_000
             ),
             source: "Cache test",
-            games: []
+            games: [],
+            standings: []
         )
 
         try await cache.save(snapshot)

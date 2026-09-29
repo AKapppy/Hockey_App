@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Iceometics
+@testable import Iceometrics
 
 struct FixtureDecodingTests {
     @Test
@@ -30,7 +30,8 @@ struct FixtureDecodingTests {
               "homeScore": null,
               "venue": "Test Arena"
             }
-          ]
+          ],
+          "standings": []
         }
         """
 

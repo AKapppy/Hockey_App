@@ -64,7 +64,7 @@ struct HomeView: View {
                 .padding(.vertical, 4)
             }
 
-            if let first = viewModel.games.first {
+            if let first = viewModel.nextGame {
                 Section("Next on the board") {
                     GameRowView(game: first)
                 }

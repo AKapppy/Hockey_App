@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Iceometics
+@testable import Iceometrics
 
 @MainActor
 struct HomeViewModelTests {
@@ -32,7 +32,8 @@ struct HomeViewModelTests {
                 snapshot: AppSnapshot(
                     generatedAt: .now,
                     source: "Test",
-                    games: [game]
+                    games: [game],
+                    standings: []
                 ),
                 origin: .fixture
             )

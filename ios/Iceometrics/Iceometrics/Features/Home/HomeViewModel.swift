@@ -20,6 +20,19 @@ final class HomeViewModel: ObservableObject {
         } ?? []
     }
 
+    var nextGame: HockeyGame? {
+        if let live = snapshot?.liveGames
+            .sorted(by: { $0.startTime < $1.startTime })
+            .first {
+            return live
+        }
+
+        let now = Date()
+        return snapshot?.upcomingGames.first(where: {
+            $0.startTime >= now
+        }) ?? snapshot?.upcomingGames.first
+    }
+
     var liveGameCount: Int {
         snapshot?.liveGames.count ?? 0
     }
