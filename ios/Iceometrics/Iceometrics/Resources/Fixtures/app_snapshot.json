@@ -1,0 +1,94 @@
+{
+  "generatedAt": "2026-09-27T18:00:00Z",
+  "source": "Bundled Iceometics starter fixture \u2014 not live",
+  "games": [
+    {
+      "id": "fixture-001",
+      "startTime": "2026-09-27T23:00:00Z",
+      "status": "scheduled",
+      "awayTeam": {
+        "id": "nyr",
+        "abbreviation": "NYR",
+        "name": "New York Rangers",
+        "logoURL": null
+      },
+      "homeTeam": {
+        "id": "njd",
+        "abbreviation": "NJD",
+        "name": "New Jersey Devils",
+        "logoURL": null
+      },
+      "awayScore": null,
+      "homeScore": null,
+      "venue": "Starter Fixture Arena"
+    },
+    {
+      "id": "fixture-002",
+      "startTime": "2026-09-28T00:30:00Z",
+      "status": "scheduled",
+      "awayTeam": {
+        "id": "nyi",
+        "abbreviation": "NYI",
+        "name": "New York Islanders",
+        "logoURL": null
+      },
+      "homeTeam": {
+        "id": "bos",
+        "abbreviation": "BOS",
+        "name": "Boston Bruins",
+        "logoURL": null
+      },
+      "awayScore": null,
+      "homeScore": null,
+      "venue": "Starter Fixture Arena"
+    },
+    {
+      "id": "fixture-003",
+      "startTime": "2026-09-26T23:00:00Z",
+      "status": "final",
+      "awayTeam": {
+        "id": "njd",
+        "abbreviation": "NJD",
+        "name": "New Jersey Devils",
+        "logoURL": null
+      },
+      "homeTeam": {
+        "id": "nyr",
+        "abbreviation": "NYR",
+        "name": "New York Rangers",
+        "logoURL": null
+      },
+      "awayScore": 2,
+      "homeScore": 4,
+      "venue": "Starter Fixture Arena"
+    }
+  ],
+  "standings": [
+    {
+      "team": {
+        "id": "nyr",
+        "abbreviation": "NYR",
+        "name": "New York Rangers",
+        "logoURL": null
+      },
+      "gamesPlayed": 3,
+      "wins": 2,
+      "losses": 1,
+      "overtimeLosses": 0,
+      "points": 4
+    },
+    {
+      "team": {
+        "id": "njd",
+        "abbreviation": "NJD",
+        "name": "New Jersey Devils",
+        "logoURL": null
+      },
+      "gamesPlayed": 3,
+      "wins": 1,
+      "losses": 1,
+      "overtimeLosses": 1,
+      "points": 3
+    }
+  ]
+}
