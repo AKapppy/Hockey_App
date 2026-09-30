@@ -9,6 +9,9 @@ nonisolated struct HockeyGame: Codable, Identifiable, Hashable, Sendable {
     let awayScore: Int?
     let homeScore: Int?
     let venue: String?
+    let gameTypeId: Int?
+    let awayShots: Int?
+    let homeShots: Int?
     let periodNumber: Int?
     let periodType: String?
     let timeRemaining: String?
@@ -23,6 +26,9 @@ nonisolated struct HockeyGame: Codable, Identifiable, Hashable, Sendable {
         awayScore: Int?,
         homeScore: Int?,
         venue: String?,
+        gameTypeId: Int? = nil,
+        awayShots: Int? = nil,
+        homeShots: Int? = nil,
         periodNumber: Int? = nil,
         periodType: String? = nil,
         timeRemaining: String? = nil,
@@ -36,6 +42,9 @@ nonisolated struct HockeyGame: Codable, Identifiable, Hashable, Sendable {
         self.awayScore = awayScore
         self.homeScore = homeScore
         self.venue = venue
+        self.gameTypeId = gameTypeId
+        self.awayShots = awayShots
+        self.homeShots = homeShots
         self.periodNumber = periodNumber
         self.periodType = periodType
         self.timeRemaining = timeRemaining

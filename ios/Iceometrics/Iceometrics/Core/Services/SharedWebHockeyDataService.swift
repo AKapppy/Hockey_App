@@ -16,8 +16,18 @@ nonisolated struct SharedWebHockeyDataService: HockeyDataService {
     }
 
     func fetchSnapshot() async throws -> AppSnapshot {
+        var request = APIRequest(
+            path: "seasons/\(season)/data.json"
+        )
+        request.queryItems = [
+            URLQueryItem(
+                name: "_refresh",
+                value: UUID().uuidString
+            )
+        ]
+
         let payload = try await client.send(
-            APIRequest(path: "seasons/\(season)/data.json"),
+            request,
             baseURL: baseURL,
             as: SharedWebExport.self
         )
@@ -67,6 +77,7 @@ nonisolated struct SharedWebGameID: Decodable, Sendable {
 nonisolated struct SharedWebGame: Decodable, Sendable {
     let id: SharedWebGameID
     let league: String
+    let gameTypeId: Int?
     let state: String
     let status: String
     let startUtc: String
@@ -91,6 +102,7 @@ nonisolated struct SharedWebTeam: Decodable, Sendable {
     let code: String
     let name: String
     let score: Int?
+    let shots: Int?
 }
 
 nonisolated struct SharedWebVenue: Decodable, Sendable {
@@ -175,6 +187,9 @@ nonisolated enum SharedWebSnapshotAdapter {
             awayScore: game.away.score,
             homeScore: game.home.score,
             venue: game.venue?.name,
+            gameTypeId: game.gameTypeId,
+            awayShots: game.away.shots,
+            homeShots: game.home.shots,
             periodNumber: game.periodDescriptor?.number,
             periodType: game.periodDescriptor?.periodType,
             timeRemaining: game.clock?.timeRemaining,

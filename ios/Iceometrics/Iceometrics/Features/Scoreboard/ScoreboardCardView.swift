@@ -14,13 +14,12 @@ struct ScoreboardCardView: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            cardHeader
-
             TeamScoreRow(
                 team: game.awayTeam,
                 score: game.awayScore,
-                showScore: showsScore,
-                winProbability: scheduledProbability(
+                shots: game.awayShots,
+                gameStatus: game.status,
+                winProbability: displayedProbability(
                     prediction?.awayWinProbability
                 )
             )
@@ -42,19 +41,34 @@ struct ScoreboardCardView: View {
             TeamScoreRow(
                 team: game.homeTeam,
                 score: game.homeScore,
-                showScore: showsScore,
-                winProbability: scheduledProbability(
+                shots: game.homeShots,
+                gameStatus: game.status,
+                winProbability: displayedProbability(
                     prediction?.homeWinProbability
                 )
             )
 
-            if let venue = game.venue,
-               !venue.isEmpty {
-                Label(venue, systemImage: "mappin.and.ellipse")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .center, spacing: 12) {
+                if let venue = game.venue,
+                   !venue.isEmpty {
+                    Label(venue, systemImage: "mappin.and.ellipse")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text("Venue TBD")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(statusBadgeText)
+                    .font(.caption.weight(.bold))
+                    .monospacedDigit()
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.quaternary, in: Capsule())
             }
         }
         .padding(18)
@@ -73,23 +87,6 @@ struct ScoreboardCardView: View {
             .stroke(.quaternary, lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
-    }
-
-    private var cardHeader: some View {
-        HStack {
-            Spacer()
-
-            Text(statusBadgeText)
-                .font(.caption.weight(.bold))
-                .monospacedDigit()
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.quaternary, in: Capsule())
-        }
-    }
-
-    private var showsScore: Bool {
-        game.status == .live || game.status == .final
     }
 
     private var statusBadgeText: String {
@@ -163,16 +160,21 @@ struct ScoreboardCardView: View {
         }
     }
 
-    private func scheduledProbability(_ value: Double?) -> Double? {
-        guard game.status == .scheduled else { return nil }
-        return value
+    private func displayedProbability(_ value: Double?) -> Double? {
+        switch game.status {
+        case .scheduled, .live:
+            return value
+        case .final, .postponed, .unknown:
+            return nil
+        }
     }
 }
 
 private struct TeamScoreRow: View {
     let team: Team
     let score: Int?
-    let showScore: Bool
+    let shots: Int?
+    let gameStatus: GameStatus
     let winProbability: Double?
 
     var body: some View {
@@ -189,20 +191,55 @@ private struct TeamScoreRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 10)
 
-            if showScore {
-                Text(score.map(String.init) ?? "–")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-            } else if let winProbability {
-                Text(winProbability, format: .percent.precision(.fractionLength(1)))
-                    .font(.headline.weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("MoneyPuck win probability")
+            switch gameStatus {
+            case .scheduled:
+                probabilityView
+            case .live:
+                probabilityView
+                shotsView
+                scoreView
+            case .final:
+                shotsView
+                scoreView
+            case .postponed, .unknown:
+                EmptyView()
             }
         }
+    }
+
+    @ViewBuilder
+    private var probabilityView: some View {
+        if let winProbability {
+            Text(
+                winProbability,
+                format: .percent.precision(.fractionLength(1))
+            )
+            .font(.subheadline.weight(.semibold))
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("MoneyPuck win probability")
+        }
+    }
+
+    private var shotsView: some View {
+        VStack(spacing: 1) {
+            Text("SOG")
+                .font(.caption2.weight(.semibold))
+            Text(shots.map(String.init) ?? "–")
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+        }
+        .foregroundStyle(.secondary)
+        .frame(minWidth: 32)
+    }
+
+    private var scoreView: some View {
+        Text(score.map(String.init) ?? "–")
+            .font(.system(size: 30, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .frame(minWidth: 28, alignment: .trailing)
     }
 }
 

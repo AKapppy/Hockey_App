@@ -34,6 +34,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Restore MoneyPuck simulation CSV cache
+        id: restore-moneypuck-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: cache/online/moneypuck
+          key: moneypuck-simulations-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            moneypuck-simulations-${{ runner.os }}-
+
       - name: Compile package
         run: python -m compileall -q hockey_app
 
@@ -45,6 +54,26 @@ jobs:
 
       - name: Export static web data
         run: python -m hockey_app.tools.export_web --out docs --refresh
+
+      - name: Fingerprint MoneyPuck simulation CSV cache
+        id: moneypuck-cache-key
+        shell: bash
+        run: |
+          if find cache/online/moneypuck -type f -name '*.csv' -print -quit 2>/dev/null | grep -q .; then
+            digest="$({ find cache/online/moneypuck -type f -name '*.csv' -print0 | sort -z | xargs -0 sha256sum; } | sha256sum | awk '{print $1}')"
+            echo "key=moneypuck-simulations-${{ runner.os }}-${digest}" >> "$GITHUB_OUTPUT"
+          else
+            echo "key=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save MoneyPuck simulation CSV cache
+        if: >-
+          steps.moneypuck-cache-key.outputs.key != '' &&
+          steps.restore-moneypuck-cache.outputs.cache-matched-key != steps.moneypuck-cache-key.outputs.key
+        uses: actions/cache/save@v4
+        with:
+          path: cache/online/moneypuck
+          key: ${{ steps.moneypuck-cache-key.outputs.key }}
 
       - name: Validate export and summarize status
         run: python -m hockey_app.tools.validate_web docs/data.json --require-nhl --require-complete-nhl

@@ -19,42 +19,236 @@ nonisolated struct MoneyPuckPredictionService: Sendable {
     ) async throws -> [String: MoneyPuckGamePrediction] {
         guard !games.isEmpty else { return [:] }
 
-        for url in Self.predictionURLs(for: date) {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 12
-            request.setValue(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    + "AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15",
-                forHTTPHeaderField: "User-Agent"
-            )
-            request.setValue("text/html,*/*", forHTTPHeaderField: "Accept")
-            request.setValue(
-                "https://moneypuck.com/",
-                forHTTPHeaderField: "Referer"
-            )
+        let scheduledGames = games.filter { $0.status == .scheduled }
+        let liveGames = games.filter { $0.status == .live }
+        var output: [String: MoneyPuckGamePrediction] = [:]
+
+        if !scheduledGames.isEmpty {
+            for url in Self.predictionURLs(for: date) {
+                var request = Self.request(for: url, accept: "text/html,*/*")
+                request.timeoutInterval = 12
+
+                do {
+                    let (data, response) = try await URLSession.shared.data(for: request)
+                    guard let http = response as? HTTPURLResponse,
+                          200..<300 ~= http.statusCode,
+                          let html = String(data: data, encoding: .utf8),
+                          !html.isEmpty else {
+                        continue
+                    }
+
+                    let predictions = Self.parsePredictions(
+                        html: html,
+                        games: scheduledGames
+                    )
+                    if !predictions.isEmpty {
+                        output.merge(predictions) { _, new in new }
+                        break
+                    }
+                } catch {
+                    continue
+                }
+            }
+        }
+
+        if !liveGames.isEmpty {
+            let livePredictions = await withTaskGroup(
+                of: (String, MoneyPuckGamePrediction?).self,
+                returning: [String: MoneyPuckGamePrediction].self
+            ) { group in
+                for game in liveGames {
+                    group.addTask {
+                        (
+                            game.id,
+                            await Self.fetchLivePrediction(for: game)
+                        )
+                    }
+                }
+
+                var values: [String: MoneyPuckGamePrediction] = [:]
+                for await (gameID, prediction) in group {
+                    if let prediction {
+                        values[gameID] = prediction
+                    }
+                }
+                return values
+            }
+            output.merge(livePredictions) { _, new in new }
+        }
+
+        return output
+    }
+
+    private static func fetchLivePrediction(
+        for game: HockeyGame
+    ) async -> MoneyPuckGamePrediction? {
+        guard Int(game.id) != nil else { return nil }
+
+        for season in seasonCandidates(for: game) {
+            guard let url = URL(
+                string: "https://moneypuck.com/moneypuck/gameData/\(season)/\(game.id).csv"
+            ) else {
+                continue
+            }
+
+            var request = request(for: url, accept: "text/csv,*/*")
+            request.timeoutInterval = 8
 
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse,
                       200..<300 ~= http.statusCode,
-                      let html = String(data: data, encoding: .utf8),
-                      !html.isEmpty else {
+                      let csv = String(data: data, encoding: .utf8),
+                      let prediction = parseLivePrediction(csv: csv) else {
                     continue
                 }
-
-                let predictions = Self.parsePredictions(
-                    html: html,
-                    games: games
-                )
-                if !predictions.isEmpty {
-                    return predictions
-                }
+                return prediction
             } catch {
                 continue
             }
         }
 
-        return [:]
+        return nil
+    }
+
+    static func parseLivePrediction(
+        csv: String
+    ) -> MoneyPuckGamePrediction? {
+        let lines = csv
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+        guard let first = lines.first else { return nil }
+
+        let headers = parseCSVLine(first)
+        guard !headers.isEmpty else { return nil }
+
+        var latest: MoneyPuckGamePrediction?
+        for line in lines.dropFirst() {
+            let values = parseCSVLine(line)
+            guard !values.isEmpty else { continue }
+
+            var row: [String: String] = [:]
+            for (index, header) in headers.enumerated()
+                where values.indices.contains(index) {
+                row[header] = values[index]
+            }
+
+            var away = probability(row["liveAwayTeamWinOverallScore"])
+            var home = probability(row["liveHomeTeamWinOverallScore"])
+
+            if away == nil || home == nil,
+               let alternateHome = probability(row["homeWinProbability"]) {
+                home = alternateHome
+                away = probability(row["awayWinProbability"])
+                    ?? max(0, min(1, 1 - alternateHome))
+            }
+
+            guard let away, let home else { continue }
+            let total = away + home
+            guard total > 0 else { continue }
+
+            let normalizedAway: Double
+            let normalizedHome: Double
+            if 0.90...1.10 ~= total {
+                normalizedAway = away
+                normalizedHome = home
+            } else {
+                normalizedAway = max(0, min(1, away / total))
+                normalizedHome = max(0, min(1, home / total))
+            }
+
+            latest = MoneyPuckGamePrediction(
+                awayWinProbability: normalizedAway,
+                homeWinProbability: normalizedHome
+            )
+        }
+
+        return latest
+    }
+
+    private static func request(
+        for url: URL,
+        accept: String
+    ) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                + "AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        request.setValue(
+            "https://moneypuck.com/",
+            forHTTPHeaderField: "Referer"
+        )
+        return request
+    }
+
+    private static func seasonCandidates(for game: HockeyGame) -> [String] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+        let parts = calendar.dateComponents([.year, .month], from: game.startTime)
+        guard let year = parts.year, let month = parts.month else { return [] }
+
+        let startYear = month >= 7 ? year : year - 1
+        var values = ["\(startYear)\(startYear + 1)"]
+
+        if game.id.count >= 4,
+           let idYear = Int(game.id.prefix(4)) {
+            let fromID = "\(idYear)\(idYear + 1)"
+            if !values.contains(fromID) {
+                values.append(fromID)
+            }
+        }
+
+        return values
+    }
+
+    private static func probability(_ raw: String?) -> Double? {
+        guard let raw,
+              let value = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              value >= 0 else {
+            return nil
+        }
+
+        if value <= 1 {
+            return value
+        }
+        if value <= 100 {
+            return value / 100
+        }
+        return nil
+    }
+
+    private static func parseCSVLine(_ line: String) -> [String] {
+        var values: [String] = []
+        var current = ""
+        var insideQuotes = false
+        var index = line.startIndex
+
+        while index < line.endIndex {
+            let char = line[index]
+            if char == "\"" {
+                let next = line.index(after: index)
+                if insideQuotes,
+                   next < line.endIndex,
+                   line[next] == "\"" {
+                    current.append("\"")
+                    index = line.index(after: next)
+                    continue
+                }
+                insideQuotes.toggle()
+            } else if char == "," && !insideQuotes {
+                values.append(current)
+                current = ""
+            } else {
+                current.append(char)
+            }
+            index = line.index(after: index)
+        }
+
+        values.append(current)
+        return values
     }
 
     static func parsePredictions(

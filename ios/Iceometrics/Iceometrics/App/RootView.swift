@@ -24,26 +24,12 @@ struct RootView: View {
             }
 
             NavigationStack {
-                FeaturePlaceholderView(
-                    title: "Predictions",
-                    systemImage: "chart.line.uptrend.xyaxis",
-                    message: "MoneyPuck prediction views are coming next."
-                )
+                PredictionsView()
             }
             .tabItem {
                 Label("Predictions", systemImage: "chart.line.uptrend.xyaxis")
             }
 
-            NavigationStack {
-                FeaturePlaceholderView(
-                    title: "Predictions 2",
-                    systemImage: "percent",
-                    message: "The second predictions workspace will be added here."
-                )
-            }
-            .tabItem {
-                Label("Predictions 2", systemImage: "percent")
-            }
 
             NavigationStack {
                 FeaturePlaceholderView(
@@ -56,16 +42,6 @@ struct RootView: View {
                 Label("Models", systemImage: "function")
             }
 
-            NavigationStack {
-                FeaturePlaceholderView(
-                    title: "Labs",
-                    systemImage: "flask.fill",
-                    message: "Experimental Iceometrics tools will live here."
-                )
-            }
-            .tabItem {
-                Label("Labs", systemImage: "flask.fill")
-            }
         }
     }
 }

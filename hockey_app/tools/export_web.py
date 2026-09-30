@@ -9,6 +9,7 @@ import shutil
 import re
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -86,11 +87,16 @@ METRIC_TITLES: dict[str, str] = {
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; HockeyAppWebExporter/1.0)"}
 URL_SIMULATIONS = "https://moneypuck.com/moneypuck/simulations/"
 DATA_SCRIPT_RE = re.compile(r'<script\s+src="data\.js(?:\?v=[^"]*)?"></script>')
+HOCKEY_TIMEZONE = ZoneInfo("America/New_York")
 
 
-def _default_season(today: dt.date | None = None) -> str:
+def _hockey_today() -> dt.date:
+    return dt.datetime.now(HOCKEY_TIMEZONE).date()
+
+
+ddef _default_season(today: dt.date | None = None) -> str:
     from hockey_app.domain.seasons import resolve_season
-    return resolve_season(today).season
+    return resolve_season(today or _hockey_today()).season
 
 
 def _season_start(season: str) -> dt.date:
@@ -956,7 +962,14 @@ def build_payload(
 ) -> dict[str, Any]:
     prediction_error = None
     try:
-        tables = compile_probability_tables(simulations_dir, start, end, metrics=METRICS, canon_team_code=canon_team_code)
+        tables = compile_probability_tables(
+    	simulations_dir,
+    	start,
+    	end,
+    	metrics=METRICS,
+    	canon_team_code=canon_team_code,
+    	forward_fill=False,
+    )
     except Exception as exc:
         tables = {}
         prediction_error = str(exc)
@@ -1083,10 +1096,12 @@ def export_web(
     refresh: bool,
 ) -> Path:
     simulations_dir = sims_dir(season)
-    errors = []
-    if refresh:
-        refresh_start = start or _season_start(season)
-        refresh_end = end or dt.date.today()
+	hockey_today = _hockey_today()
+	errors = []
+
+	if refresh:
+    	    refresh_start = start or _season_start(season)
+   	    refresh_end = end or hockey_today
         try:
             errors = download_missing_simulations(refresh_start, refresh_end, simulations_dir,
                 headers=HEADERS, ensure_dir_writable=_ensure_writable, index_url=URL_SIMULATIONS)
@@ -1100,9 +1115,24 @@ def export_web(
             end=refresh_end,
         )
 
-    dates = _csv_dates(simulations_dir)
-    export_start = start or (dates[0] if dates else _season_start(season))
-    export_end = end or (dates[-1] if dates else max(export_start, dt.date.today()))
+    # Ignore future-dated cached CSVs and use the Eastern hockey day,
+# not the GitHub runner's UTC calendar date.
+dates = [
+    day
+    for day in _csv_dates(simulations_dir)
+    if day <= hockey_today
+]
+
+export_start = start or (
+    dates[0] if dates else _season_start(season)
+)
+
+# Deliberately include today even if MoneyPuck has not published
+# today's CSV yet. With forward_fill=False, that column remains blank.
+export_end = end or hockey_today
+
+if export_end < export_start:
+    export_end = export_start
     payload = build_payload(
         season=season,
         start=export_start,

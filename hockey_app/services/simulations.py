@@ -127,6 +127,7 @@ def compile_probability_tables(
     *,
     metrics: dict[str, str],
     canon_team_code: Callable[[str], str],
+    forward_fill: bool = True,
 ) -> dict[str, pd.DataFrame]:
     all_dates = date_range(start_date, end_date)
     date_to_col = {d: md_label(d) for d in all_dates}
@@ -169,8 +170,10 @@ def compile_probability_tables(
         table = pd.DataFrame(index=idx, columns=columns, dtype="float64")
         for (team, d), v in values[out_key].items():
             table.loc[team, date_to_col[d]] = v
-        table = table.ffill(axis=1)
-        tables[out_key] = table
+        if forward_fill:
+    	    table = table.ffill(axis=1)
+
+	tables[out_key] = table
 
     return tables
 
