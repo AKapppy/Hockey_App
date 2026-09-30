@@ -20,10 +20,14 @@ actor PredictionDataService {
             path: "seasons/\(season)/data.json"
         )
 
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.headers["Cache-Control"] = "no-cache, no-store, max-age=0"
+        request.headers["Pragma"] = "no-cache"
+
         request.queryItems = [
             URLQueryItem(
                 name: "predictions_v",
-                value: String(Int(Date().timeIntervalSince1970))
+                value: UUID().uuidString
             )
         ]
 

@@ -193,39 +193,15 @@ private struct PredictionSpreadsheet: View {
         compact ? 68 : 82
     }
 
-    private var gridRows: [GridItem] {
-        Array(
-            repeating: GridItem(.fixed(rowHeight), spacing: 0),
-            count: teams.count + 1
-        )
-    }
-
     var body: some View {
         ScrollView(.vertical) {
             HStack(alignment: .top, spacing: 0) {
                 fixedTeamColumn
 
                 ScrollView(.horizontal) {
-                    LazyHGrid(
-                        rows: gridRows,
-                        alignment: .top,
-                        spacing: 0
-                    ) {
+                    LazyHStack(alignment: .top, spacing: 0) {
                         ForEach(table.columns.indices, id: \.self) { columnIndex in
-                            dateHeader(
-                                table.columns[columnIndex],
-                                isLatest: columnIndex == table.columns.count - 1
-                            )
-
-                            ForEach(teams) { team in
-                                probabilityCell(
-                                    table.value(
-                                        teamCode: team.code,
-                                        columnIndex: columnIndex
-                                    ),
-                                    isLatest: columnIndex == table.columns.count - 1
-                                )
-                            }
+                            predictionDateColumn(columnIndex)
                         }
                     }
                 }
@@ -245,6 +221,30 @@ private struct PredictionSpreadsheet: View {
             )
             .stroke(.quaternary, lineWidth: 1)
         }
+    }
+
+    private func predictionDateColumn(
+        _ columnIndex: Int
+    ) -> some View {
+        let isLatest = columnIndex == table.columns.count - 1
+
+        return VStack(spacing: 0) {
+            dateHeader(
+                table.columns[columnIndex],
+                isLatest: isLatest
+            )
+
+            ForEach(teams) { team in
+                probabilityCell(
+                    table.value(
+                        teamCode: team.code,
+                        columnIndex: columnIndex
+                    ),
+                    isLatest: isLatest
+                )
+            }
+        }
+        .frame(width: dateColumnWidth)
     }
 
     private var fixedTeamColumn: some View {

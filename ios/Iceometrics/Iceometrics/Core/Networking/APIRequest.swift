@@ -5,6 +5,7 @@ nonisolated struct APIRequest {
     var method: HTTPMethod = .get
     var queryItems: [URLQueryItem] = []
     var headers: [String: String] = [:]
+    var cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy
 
     func makeURLRequest(baseURL: URL) throws -> URLRequest {
         let targetURL = baseURL.appendingPathComponent(path)
@@ -24,9 +25,12 @@ nonisolated struct APIRequest {
             throw IceometicsError.invalidURL
         }
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(
+            url: url,
+            cachePolicy: cachePolicy,
+            timeoutInterval: 30
+        )
         request.httpMethod = method.rawValue
-        request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         for (key, value) in headers {
