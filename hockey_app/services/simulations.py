@@ -171,9 +171,9 @@ def compile_probability_tables(
         for (team, d), v in values[out_key].items():
             table.loc[team, date_to_col[d]] = v
         if forward_fill:
-    	    table = table.ffill(axis=1)
+            table = table.ffill(axis=1)
 
-	tables[out_key] = table
+        tables[out_key] = table
 
     return tables
 
