@@ -333,18 +333,46 @@ nonisolated struct StatsSnapshot: Sendable {
         for phase: StatsPhase,
         kind: HistoryKind
     ) -> StatsHistoryTable? {
-        guard let bounds = phaseDayBounds(phase) else { return nil }
-        let days = Self.days(from: bounds.start, through: bounds.end)
+        guard let bounds = phaseDayBounds(phase),
+              let phaseStart = Self.parseDay(bounds.start) else {
+            return nil
+        }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
+
+        guard let baselineDate = calendar.date(
+            byAdding: .day,
+            value: -1,
+            to: phaseStart
+        ) else {
+            return nil
+        }
+
+        let baselineDay = Self.dayString(baselineDate)
+        let phaseDays = Self.days(from: bounds.start, through: bounds.end)
+        let days = [baselineDay] + phaseDays
         guard !days.isEmpty else { return nil }
 
+        let phaseGames = games
+            .filter { $0.gameTypeID == phase.gameTypeID }
+            .filter { $0.day >= bounds.start && $0.day <= bounds.end }
+
+        let gamesByDay = Dictionary(grouping: phaseGames, by: \.day)
         var totals = Dictionary(uniqueKeysWithValues: teams.map { ($0.code, 0) })
         var rows = Dictionary(uniqueKeysWithValues: teams.map { ($0.code, [Double?]()) })
-        let byDay = Dictionary(grouping: games.filter {
-            $0.gameTypeID == phase.gameTypeID && $0.isFinal
-        }, by: \.day)
 
         for day in days {
-            for game in byDay[day] ?? [] {
+            if day == baselineDay {
+                for team in teams {
+                    rows[team.code, default: []].append(0)
+                }
+                continue
+            }
+
+            let dayGames = gamesByDay[day] ?? []
+
+            for game in dayGames where game.isFinal {
                 guard let awayScore = game.awayScore,
                       let homeScore = game.homeScore,
                       awayScore != homeScore else {
@@ -360,6 +388,7 @@ nonisolated struct StatsSnapshot: Sendable {
                     if game.wentToExtraTime {
                         totals[loser, default: 0] += 1
                     }
+
                 case .goalDifferential:
                     totals[game.awayCode, default: 0] += awayScore - homeScore
                     totals[game.homeCode, default: 0] += homeScore - awayScore
@@ -367,18 +396,31 @@ nonisolated struct StatsSnapshot: Sendable {
             }
 
             for team in teams {
-                rows[team.code, default: []].append(Double(totals[team.code, default: 0]))
+                let teamGames = dayGames.filter {
+                    $0.awayCode == team.code || $0.homeCode == team.code
+                }
+                let hasUnfinishedGame = !teamGames.isEmpty
+                    && teamGames.contains { !$0.isFinal }
+
+                rows[team.code, default: []].append(
+                    hasUnfinishedGame
+                        ? nil
+                        : Double(totals[team.code, default: 0])
+                )
             }
         }
 
-        let labels = days.map(Self.shortLabel)
-        if phase == .postseason && kind == .goalDifferential {
-            rows = rows.filter { _, values in
-                values.compactMap { $0 }.contains { abs($0) > 0.000_001 }
-            }
+        if phase == .postseason {
+            let participating = Set(
+                phaseGames.flatMap { [$0.awayCode, $0.homeCode] }
+            )
+            rows = rows.filter { participating.contains($0.key) }
         }
 
-        return StatsHistoryTable(columns: labels, rows: rows)
+        return StatsHistoryTable(
+            columns: days.map(Self.shortLabel),
+            rows: rows
+        )
     }
 
     private func phaseDayBounds(_ phase: StatsPhase) -> (start: String, end: String)? {

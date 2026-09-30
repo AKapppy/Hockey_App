@@ -3,6 +3,7 @@ import SwiftUI
 struct PredictionPieChartView: View {
     let snapshot: PredictionSnapshot
     @State private var selectedColumnIndex: Int
+    @State private var showingCalendar = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private let metricOrder = [
@@ -68,12 +69,9 @@ struct PredictionPieChartView: View {
                         let x = center.x + radius * cos(radians)
                         let y = center.y + radius * sin(radians)
                         let arcLength = CGFloat(slice.extent * .pi / 180) * radius
-                        let logoSize = min(
-                            horizontalSizeClass == .compact ? 27 : 34,
-                            max(15, arcLength * 0.68)
-                        )
+                        let logoSize: CGFloat = horizontalSizeClass == .compact ? 20 : 24
 
-                        if arcLength >= 15 {
+                        if arcLength >= 18 {
                             PredictionPieLogo(team: slice.team)
                                 .frame(width: logoSize, height: logoSize)
                                 .position(x: x, y: y)
@@ -102,11 +100,6 @@ struct PredictionPieChartView: View {
                 }
             }
             .frame(height: horizontalSizeClass == .compact ? 310 : 430)
-
-            Text("Outer → inner: Playoffs · Round 2 · Conf. Finals · Cup Final · Win Cup")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
         }
         .padding(12)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -127,14 +120,19 @@ struct PredictionPieChartView: View {
             .buttonStyle(.borderless)
             .disabled(selectedColumnIndex <= 0)
 
-            VStack(spacing: 2) {
-                Text("Probability Rings")
-                    .font(.headline)
+            Button {
+                showingCalendar = true
+            } label: {
                 Text(displayDate(selectedColumn))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .frame(minWidth: 150)
+            .popover(isPresented: $showingCalendar) {
+                predictionCalendar
+            }
 
             Button {
                 selectedColumnIndex = min(
@@ -150,6 +148,67 @@ struct PredictionPieChartView: View {
             .disabled(columns.isEmpty || selectedColumnIndex >= columns.count - 1)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var predictionCalendar: some View {
+        DatePicker(
+            "Prediction date",
+            selection: Binding(
+                get: {
+                    selectedColumnDate
+                        ?? availableColumnDates.last
+                        ?? Date()
+                },
+                set: { newDate in
+                    if let index = nearestColumnIndex(to: newDate) {
+                        selectedColumnIndex = index
+                    }
+                }
+            ),
+            in: predictionDateRange,
+            displayedComponents: .date
+        )
+        .datePickerStyle(.graphical)
+        .labelsHidden()
+        .padding()
+    }
+
+    private var availableColumnDates: [Date] {
+        columns.compactMap(dateForColumn)
+    }
+
+    private var selectedColumnDate: Date? {
+        dateForColumn(selectedColumn)
+    }
+
+    private var predictionDateRange: ClosedRange<Date> {
+        guard let first = availableColumnDates.first,
+              let last = availableColumnDates.last else {
+            let today = Calendar.current.startOfDay(for: Date())
+            return today...today
+        }
+        return first...last
+    }
+
+    private func nearestColumnIndex(to date: Date) -> Int? {
+        let calendar = Calendar(identifier: .gregorian)
+        return columns.indices.min { lhs, rhs in
+            guard let left = dateForColumn(columns[lhs]),
+                  let right = dateForColumn(columns[rhs]) else {
+                return false
+            }
+
+            let target = calendar.startOfDay(for: date)
+            let leftDistance = abs(
+                calendar.startOfDay(for: left)
+                    .timeIntervalSince(target)
+            )
+            let rightDistance = abs(
+                calendar.startOfDay(for: right)
+                    .timeIntervalSince(target)
+            )
+            return leftDistance < rightDistance
+        }
     }
 
     private var selectedColumn: String {
@@ -264,23 +323,29 @@ struct PredictionPieChartView: View {
         return path
     }
 
-    private func displayDate(_ raw: String) -> String {
+    private func dateForColumn(_ raw: String) -> Date? {
         let parts = raw.split(separator: "/")
         guard parts.count == 2,
               let month = Int(parts[0]),
               let day = Int(parts[1]),
               let startYear = Int(snapshot.season.prefix(4)) else {
-            return raw
+            return nil
         }
 
         let year = month >= 7 ? startYear : startYear + 1
-        var components = DateComponents()
-        components.calendar = Calendar(identifier: .gregorian)
-        components.year = year
-        components.month = month
-        components.day = day
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
+        return calendar.date(
+            from: DateComponents(
+                year: year,
+                month: month,
+                day: day
+            )
+        )
+    }
 
-        guard let date = components.date else { return raw }
+    private func displayDate(_ raw: String) -> String {
+        guard let date = dateForColumn(raw) else { return raw }
         return date.formatted(
             .dateTime
                 .day()
@@ -289,6 +354,7 @@ struct PredictionPieChartView: View {
                 .locale(Locale(identifier: "en_GB"))
         )
     }
+
 }
 
 private struct PredictionRingSlice: Identifiable {

@@ -183,30 +183,37 @@ struct ScoreboardView: View {
                 .disabled(!canMoveDay(by: -1))
                 .accessibilityLabel("Previous day")
 
-                VStack(spacing: 3) {
-                    ViewThatFits(in: .horizontal) {
-                        dateHeaderText(
-                            format: "EEEE d MMMM yyyy",
-                            fixedWidth: true
-                        )
-                        dateHeaderText(
-                            format: "EEE d MMMM yyyy",
-                            fixedWidth: true
-                        )
-                        dateHeaderText(
-                            format: "EEE d MMM yyyy",
-                            fixedWidth: false
-                        )
-                    }
-                    .frame(maxWidth: .infinity)
+                Button {
+                    showingCalendar = true
+                } label: {
+                    VStack(spacing: 3) {
+                        ViewThatFits(in: .horizontal) {
+                            dateHeaderText(
+                                format: "EEEE d MMMM yyyy",
+                                fixedWidth: true
+                            )
+                            dateHeaderText(
+                                format: "EEE d MMMM yyyy",
+                                fixedWidth: true
+                            )
+                            dateHeaderText(
+                                format: "EEE d MMM yyyy",
+                                fixedWidth: false
+                            )
+                        }
+                        .frame(maxWidth: .infinity)
 
-                    if calendar.isDateInToday(selectedDate) {
-                        Text("Today")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                        if calendar.isDateInToday(selectedDate) {
+                            Text("Today")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
+                .accessibilityLabel("Choose date")
 
                 Button {
                     moveDay(by: 1)
@@ -220,21 +227,12 @@ struct ScoreboardView: View {
                 .accessibilityLabel("Next day")
             }
 
-            HStack(spacing: 10) {
-                Button {
-                    showingCalendar = true
-                } label: {
-                    Label("Choose Date", systemImage: "calendar")
+            if !calendar.isDateInToday(selectedDate),
+               isTodayInsideSchedule {
+                Button("Today") {
+                    selectedDate = calendar.startOfDay(for: Date())
                 }
                 .buttonStyle(.bordered)
-
-                if !calendar.isDateInToday(selectedDate),
-                   isTodayInsideSchedule {
-                    Button("Today") {
-                        selectedDate = calendar.startOfDay(for: Date())
-                    }
-                    .buttonStyle(.bordered)
-                }
             }
         }
         .frame(maxWidth: .infinity)

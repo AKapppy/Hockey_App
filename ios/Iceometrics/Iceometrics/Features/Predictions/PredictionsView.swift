@@ -2,7 +2,7 @@ import SwiftUI
 
 struct PredictionsView: View {
     @StateObject private var viewModel: PredictionsViewModel
-    @State private var selectedMetricKey = "madeplayoffs"
+    @State private var selectedPredictionTab = "pie"
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @MainActor
@@ -59,10 +59,11 @@ struct PredictionsView: View {
     private func predictionContent(_ snapshot: PredictionSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             predictionHeader(snapshot)
-            PredictionPieChartView(snapshot: snapshot)
-            metricPicker(snapshot.metrics)
+            predictionTabPicker(snapshot.metrics)
 
-            if let table = snapshot.tables[selectedMetricKey] {
+            if selectedPredictionTab == "pie" {
+                PredictionPieChartView(snapshot: snapshot)
+            } else if let table = snapshot.tables[selectedPredictionTab] {
                 PredictionSpreadsheet(
                     table: table,
                     teams: sortedTeams(
@@ -88,8 +89,12 @@ struct PredictionsView: View {
     private func predictionHeader(_ snapshot: PredictionSnapshot) -> some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(selectedMetric?.title ?? "MoneyPuck Predictions")
-                    .font(.title2.bold())
+                Text(
+                    selectedPredictionTab == "pie"
+                        ? "MoneyPuck Predictions"
+                        : (selectedMetric?.title ?? "MoneyPuck Predictions")
+                )
+                .font(.title2.bold())
 
                 Text("\(viewModel.sourceStatusText) • \(viewModel.updatedText)")
                     .font(.caption)
@@ -105,29 +110,56 @@ struct PredictionsView: View {
         }
     }
 
-    private func metricPicker(_ metrics: [PredictionMetric]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+    private func predictionTabPicker(_ metrics: [PredictionMetric]) -> some View {
+        ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
-                ForEach(metrics) { metric in
-                    Button {
-                        selectedMetricKey = metric.key
-                    } label: {
-                        Text(metric.label)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(
-                        PredictionMetricButtonStyle(
-                            isSelected: selectedMetricKey == metric.key
-                        )
-                    )
-                }
+                predictionTabButtons(metrics)
             }
+            .frame(maxWidth: .infinity, alignment: .center)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    predictionTabButtons(metrics)
+                }
+                .padding(.horizontal, 1)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func predictionTabButtons(_ metrics: [PredictionMetric]) -> some View {
+        Button {
+            selectedPredictionTab = "pie"
+        } label: {
+            Text("Pie Chart")
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+        }
+        .buttonStyle(
+            PredictionMetricButtonStyle(
+                isSelected: selectedPredictionTab == "pie"
+            )
+        )
+
+        ForEach(metrics) { metric in
+            Button {
+                selectedPredictionTab = metric.key
+            } label: {
+                Text(metric.label)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .buttonStyle(
+                PredictionMetricButtonStyle(
+                    isSelected: selectedPredictionTab == metric.key
+                )
+            )
         }
     }
 
     private var selectedMetric: PredictionMetric? {
-        viewModel.metrics.first { $0.key == selectedMetricKey }
+        viewModel.metrics.first { $0.key == selectedPredictionTab }
     }
 
     private func sortedTeams(
@@ -149,14 +181,20 @@ struct PredictionsView: View {
     private func selectFirstAvailableMetricIfNeeded() {
         guard let snapshot = viewModel.snapshot else { return }
 
-        if snapshot.tables[selectedMetricKey] != nil {
+        if selectedPredictionTab == "pie" {
+            return
+        }
+
+        if snapshot.tables[selectedPredictionTab] != nil {
             return
         }
 
         if let first = snapshot.metrics.first(where: {
             snapshot.tables[$0.key] != nil
         }) {
-            selectedMetricKey = first.key
+            selectedPredictionTab = first.key
+        } else {
+            selectedPredictionTab = "pie"
         }
     }
 }
@@ -229,66 +267,83 @@ private struct PredictionSpreadsheet: View {
     ) -> some View {
         let isLatest = columnIndex == table.columns.count - 1
 
-        return VStack(spacing: 0) {
-            dateHeader(
-                table.columns[columnIndex],
-                isLatest: isLatest
-            )
-
-            ForEach(teams) { team in
-                probabilityCell(
-                    table.value(
-                        teamCode: team.code,
-                        columnIndex: columnIndex
-                    ),
+        return LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            Section {
+                ForEach(teams) { team in
+                    probabilityCell(
+                        table.value(
+                            teamCode: team.code,
+                            columnIndex: columnIndex
+                        ),
+                        isLatest: isLatest
+                    )
+                }
+            } header: {
+                dateHeader(
+                    table.columns[columnIndex],
                     isLatest: isLatest
                 )
+                .zIndex(2)
             }
         }
         .frame(width: dateColumnWidth)
     }
 
     private var fixedTeamColumn: some View {
-        VStack(spacing: 0) {
-            Text("Team")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-                .frame(
-                    width: teamColumnWidth,
-                    height: rowHeight,
-                    alignment: .leading
-                )
-                .padding(.horizontal, 10)
-                .background(Color.primary.opacity(0.055))
+        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            Section {
+                ForEach(teams) { team in
+                    HStack(spacing: 9) {
+                        PredictionTeamLogo(team: team)
 
-            ForEach(teams) { team in
-                HStack(spacing: 9) {
-                    PredictionTeamLogo(team: team)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(compact ? team.code : team.name)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(compact ? team.code : team.name)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-
-                        if !compact {
-                            Text(team.code)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                            if !compact {
+                                Text(team.code)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                    }
 
-                    Spacer(minLength: 0)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(
+                        width: teamColumnWidth,
+                        height: rowHeight,
+                        alignment: .leading
+                    )
+                    .padding(.horizontal, 10)
+                    .background(Color.primary.opacity(0.025))
+                    .overlay(alignment: .bottom) {
+                        Rectangle()
+                            .fill(.quaternary)
+                            .frame(height: 1)
+                    }
                 }
-                .frame(
-                    width: teamColumnWidth,
-                    height: rowHeight,
-                    alignment: .leading
-                )
-                .padding(.horizontal, 10)
-                .background(Color.primary.opacity(0.025))
+            } header: {
+                Text("Team")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .frame(
+                        width: teamColumnWidth,
+                        height: rowHeight,
+                        alignment: .leading
+                    )
+                    .padding(.horizontal, 10)
+                    .background(Color.primary.opacity(0.055))
+                    .background(.background)
+                    .overlay(alignment: .bottom) {
+                        Rectangle()
+                            .fill(.quaternary)
+                            .frame(height: 1)
+                    }
+                    .zIndex(2)
             }
         }
-        .zIndex(1)
+        .zIndex(3)
     }
 
     private func dateHeader(
@@ -308,7 +363,14 @@ private struct PredictionSpreadsheet: View {
                     : Color.primary.opacity(0.055)
             )
             .overlay(alignment: .leading) {
-                Divider()
+                Rectangle()
+                    .fill(.quaternary)
+                    .frame(width: 1)
+            }
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(.quaternary)
+                    .frame(height: 1)
             }
     }
 
@@ -342,7 +404,14 @@ private struct PredictionSpreadsheet: View {
             )
         )
         .overlay(alignment: .leading) {
-            Divider()
+            Rectangle()
+                .fill(.quaternary)
+                .frame(width: 1)
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(.quaternary)
+                .frame(height: 1)
         }
     }
 

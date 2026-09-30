@@ -55,14 +55,12 @@ struct StatsView: View {
     private func content(_ snapshot: StatsSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(selectedSection.title)
-                        .font(.title2.bold())
-                    Text("NHL • \(viewModel.updatedText)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("NHL • \(viewModel.updatedText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Spacer()
+
                 if viewModel.isLoading {
                     ProgressView().controlSize(.small)
                 }
@@ -93,20 +91,25 @@ struct StatsView: View {
                         selectedTeamCode: $selectedTeamCode
                     )
                 case .points:
-                    if let table = snapshot.pointsHistory() {
-                        HistoryStatsPanel(
-                            title: "Points",
-                            table: table,
-                            teams: snapshot.teams,
-                            selectedTeamCode: $selectedTeamCode,
-                            allowNegative: false
-                        )
-                    } else {
-                        ContentUnavailableView(
-                            "Points unavailable",
-                            systemImage: "chart.xyaxis.line",
-                            description: Text("Regular-season points history is not available yet.")
-                        )
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Points")
+                            .font(.title2.bold())
+
+                        if let table = snapshot.pointsHistory() {
+                            HistoryStatsPanel(
+                                title: "Points",
+                                table: table,
+                                teams: snapshot.teams,
+                                selectedTeamCode: $selectedTeamCode,
+                                allowNegative: false
+                            )
+                        } else {
+                            ContentUnavailableView(
+                                "Points unavailable",
+                                systemImage: "chart.xyaxis.line",
+                                description: Text("Regular-season points history is not available yet.")
+                            )
+                        }
                     }
                 }
             }
@@ -117,25 +120,40 @@ struct StatsView: View {
     }
 
     private var statsSectionPicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
-                ForEach(StatsSection.allCases) { section in
-                    Button {
-                        selectedSection = section
-                    } label: {
-                        Text(section.title)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(
-                        StatsTabButtonStyle(
-                            isSelected: selectedSection == section
-                        )
-                    )
-                }
+                statsSectionButtons
             }
+            .frame(maxWidth: .infinity, alignment: .center)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    statsSectionButtons
+                }
+                .padding(.horizontal, 1)
+            }
+            .frame(maxWidth: .infinity)
         }
     }
+
+    @ViewBuilder
+    private var statsSectionButtons: some View {
+        ForEach(StatsSection.allCases) { section in
+            Button {
+                selectedSection = section
+            } label: {
+                Text(section.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .buttonStyle(
+                StatsTabButtonStyle(
+                    isSelected: selectedSection == section
+                )
+            )
+        }
+    }
+
 }
 
 private enum StatsSection: String, CaseIterable, Identifiable {
@@ -190,12 +208,49 @@ private struct StatsPhasePicker: View {
     }
 }
 
+private struct StatsPanelHeader: View {
+    let title: String
+    @Binding var selection: StatsPhase
+    let phases: [StatsPhase]
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    var body: some View {
+        if horizontalSizeClass == .compact {
+            VStack(spacing: 8) {
+                Text(title)
+                    .font(.title2.bold())
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                StatsPhasePicker(
+                    selection: $selection,
+                    phases: phases
+                )
+            }
+        } else {
+            HStack(spacing: 14) {
+                Text(title)
+                    .font(.title2.bold())
+
+                StatsPhasePicker(
+                    selection: $selection,
+                    phases: phases
+                )
+                .frame(maxWidth: 420)
+
+                Spacer(minLength: 0)
+            }
+        }
+    }
+}
+
 private struct TeamStatsPanel: View {
     let snapshot: StatsSnapshot
     @Binding var selectedTeamCode: String?
     @State private var phase: StatsPhase = .preseason
     @State private var sortKey: TeamSortKey = .team
     @State private var descending = false
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var phases: [StatsPhase] {
         snapshot.availablePhases.isEmpty ? [.preseason] : snapshot.availablePhases
@@ -248,12 +303,7 @@ private struct TeamStatsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            StatsPhasePicker(selection: $phase, phases: phases)
-
-            if let selectedTeamCode,
-               let form = snapshot.recentForm(teamCode: selectedTeamCode) {
-                RecentFormCard(form: form)
-            }
+            teamHeader
 
             TeamStatsTable(
                 snapshot: snapshot,
@@ -266,6 +316,48 @@ private struct TeamStatsPanel: View {
         }
         .onAppear { normalizePhase() }
         .onChange(of: snapshot.generatedAt) { _, _ in normalizePhase() }
+    }
+
+    @ViewBuilder
+    private var teamHeader: some View {
+        let form = selectedTeamCode.flatMap {
+            snapshot.recentForm(teamCode: $0)
+        }
+
+        if horizontalSizeClass == .compact {
+            VStack(spacing: 8) {
+                StatsPanelHeader(
+                    title: "Team Stats",
+                    selection: $phase,
+                    phases: phases
+                )
+
+                if let form {
+                    RecentFormCard(form: form)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        } else {
+            HStack(alignment: .top, spacing: 16) {
+                HStack(spacing: 14) {
+                    Text("Team Stats")
+                        .font(.title2.bold())
+
+                    StatsPhasePicker(
+                        selection: $phase,
+                        phases: phases
+                    )
+                    .frame(maxWidth: 420)
+                }
+
+                Spacer(minLength: 18)
+
+                if let form {
+                    RecentFormCard(form: form)
+                        .frame(maxWidth: 430, alignment: .trailing)
+                }
+            }
+        }
     }
 
     private func normalizePhase() {
@@ -328,30 +420,7 @@ private struct TeamStatsTable: View {
     var body: some View {
         ScrollView(.vertical) {
             HStack(alignment: .top, spacing: 0) {
-                VStack(spacing: 0) {
-                    header(.team, width: teamWidth)
-                    ForEach(rows) { row in
-                        Button {
-                            selectedTeamCode = row.teamCode
-                        } label: {
-                            HStack(spacing: 6) {
-                                StatsTeamLogo(team: snapshot.team(for: row.teamCode), size: 24)
-                                Text(row.teamCode)
-                                    .font(.subheadline.weight(.semibold))
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 8)
-                            .frame(width: teamWidth, height: rowHeight)
-                            .background(
-                                selectedTeamCode == row.teamCode
-                                    ? Color.accentColor.opacity(0.12)
-                                    : Color.primary.opacity(0.025)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .zIndex(1)
+                fixedTeamColumn
 
                 ScrollView(.horizontal) {
                     HStack(spacing: 0) {
@@ -380,6 +449,44 @@ private struct TeamStatsTable: View {
         }
     }
 
+    private var fixedTeamColumn: some View {
+        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            Section {
+                ForEach(rows) { row in
+                    Button {
+                        selectedTeamCode = row.teamCode
+                    } label: {
+                        HStack(spacing: 6) {
+                            StatsTeamLogo(
+                                team: snapshot.team(for: row.teamCode),
+                                size: 24
+                            )
+                            Text(row.teamCode)
+                                .font(.subheadline.weight(.semibold))
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(width: teamWidth, height: rowHeight)
+                        .background(
+                            selectedTeamCode == row.teamCode
+                                ? Color.accentColor.opacity(0.12)
+                                : Color.primary.opacity(0.025)
+                        )
+                        .overlay(alignment: .bottom) {
+                            tableHorizontalHairline
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            } header: {
+                header(.team, width: teamWidth)
+                    .zIndex(2)
+            }
+        }
+        .background(.background)
+        .zIndex(3)
+    }
+
     private func header(_ key: TeamSortKey, width: CGFloat = 68) -> some View {
         Button {
             onSort(key)
@@ -395,6 +502,13 @@ private struct TeamStatsTable: View {
             .foregroundStyle(.secondary)
             .frame(width: width, height: rowHeight)
             .background(Color.primary.opacity(0.055))
+            .background(.background)
+            .overlay(alignment: .leading) {
+                tableVerticalHairline
+            }
+            .overlay(alignment: .bottom) {
+                tableHorizontalHairline
+            }
         }
         .buttonStyle(.plain)
     }
@@ -409,22 +523,31 @@ private struct TeamStatsTable: View {
         let low = values.min() ?? 0
         let high = values.max() ?? low
 
-        return VStack(spacing: 0) {
-            header(key, width: width)
-            ForEach(rows) { row in
-                let value = numericValue(row, key: key)
-                Text(text(row))
-                    .font(.system(.caption, design: .monospaced).weight(.medium))
-                    .frame(width: width, height: rowHeight)
-                    .background(
-                        heatColor(
-                            value: value,
-                            low: low,
-                            high: high,
-                            inverse: inverse
+        return LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            Section {
+                ForEach(rows) { row in
+                    let value = numericValue(row, key: key)
+                    Text(text(row))
+                        .font(.system(.caption, design: .monospaced).weight(.medium))
+                        .frame(width: width, height: rowHeight)
+                        .background(
+                            heatColor(
+                                value: value,
+                                low: low,
+                                high: high,
+                                inverse: inverse
+                            )
                         )
-                    )
-                    .overlay(alignment: .leading) { Divider() }
+                        .overlay(alignment: .leading) {
+                            tableVerticalHairline
+                        }
+                        .overlay(alignment: .bottom) {
+                            tableHorizontalHairline
+                        }
+                }
+            } header: {
+                header(key, width: width)
+                    .zIndex(2)
             }
         }
     }
@@ -488,7 +611,11 @@ private struct GameStatsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            StatsPhasePicker(selection: $phase, phases: phases)
+            StatsPanelHeader(
+                title: "Game Stats",
+                selection: $phase,
+                phases: phases
+            )
 
             if let table = snapshot.gameStats(for: phase) {
                 GameStatsTableView(
@@ -533,55 +660,12 @@ private struct GameStatsTableView: View {
     var body: some View {
         ScrollView(.vertical) {
             HStack(alignment: .top, spacing: 0) {
-                VStack(spacing: 0) {
-                    Text("Team")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-                        .frame(width: teamWidth, height: rowHeight)
-                        .background(Color.primary.opacity(0.055))
-
-                    ForEach(teams) { team in
-                        Button {
-                            selectedTeamCode = team.code
-                        } label: {
-                            HStack(spacing: 6) {
-                                StatsTeamLogo(team: team, size: 24)
-                                Text(team.code)
-                                    .font(.subheadline.weight(.semibold))
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 8)
-                            .frame(width: teamWidth, height: rowHeight)
-                            .background(
-                                selectedTeamCode == team.code
-                                    ? Color.accentColor.opacity(0.12)
-                                    : Color.primary.opacity(0.025)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+                fixedTeamColumn
 
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: 0) {
                         ForEach(table.columns, id: \.self) { day in
-                            VStack(spacing: 0) {
-                                Text(displayDay(day))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: dateWidth, height: rowHeight)
-                                    .background(Color.primary.opacity(0.055))
-                                    .overlay(alignment: .leading) { Divider() }
-
-                                ForEach(teams) { team in
-                                    let result = table.result(teamCode: team.code, day: day) ?? ""
-                                    Text(result)
-                                        .font(.system(.caption, design: .monospaced).weight(.bold))
-                                        .frame(width: dateWidth, height: rowHeight)
-                                        .background(resultColor(result))
-                                        .overlay(alignment: .leading) { Divider() }
-                                }
-                            }
+                            dateColumn(day)
                         }
                     }
                 }
@@ -591,6 +675,83 @@ private struct GameStatsTableView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(.quaternary, lineWidth: 1)
+        }
+    }
+
+    private var fixedTeamColumn: some View {
+        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            Section {
+                ForEach(teams) { team in
+                    Button {
+                        selectedTeamCode = team.code
+                    } label: {
+                        HStack(spacing: 6) {
+                            StatsTeamLogo(team: team, size: 24)
+                            Text(team.code)
+                                .font(.subheadline.weight(.semibold))
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(width: teamWidth, height: rowHeight)
+                        .background(
+                            selectedTeamCode == team.code
+                                ? Color.accentColor.opacity(0.12)
+                                : Color.primary.opacity(0.025)
+                        )
+                        .overlay(alignment: .bottom) {
+                            tableHorizontalHairline
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            } header: {
+                Text("Team")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                    .frame(width: teamWidth, height: rowHeight)
+                    .background(Color.primary.opacity(0.055))
+                    .background(.background)
+                    .overlay(alignment: .bottom) {
+                        tableHorizontalHairline
+                    }
+                    .zIndex(2)
+            }
+        }
+        .background(.background)
+        .zIndex(3)
+    }
+
+    private func dateColumn(_ day: String) -> some View {
+        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            Section {
+                ForEach(teams) { team in
+                    let result = table.result(teamCode: team.code, day: day) ?? ""
+                    Text(result)
+                        .font(.system(.caption, design: .monospaced).weight(.bold))
+                        .frame(width: dateWidth, height: rowHeight)
+                        .background(resultColor(result))
+                        .overlay(alignment: .leading) {
+                            tableVerticalHairline
+                        }
+                        .overlay(alignment: .bottom) {
+                            tableHorizontalHairline
+                        }
+                }
+            } header: {
+                Text(displayDay(day))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: dateWidth, height: rowHeight)
+                    .background(Color.primary.opacity(0.055))
+                    .background(.background)
+                    .overlay(alignment: .leading) {
+                        tableVerticalHairline
+                    }
+                    .overlay(alignment: .bottom) {
+                        tableHorizontalHairline
+                    }
+                    .zIndex(2)
+            }
         }
     }
 
@@ -615,9 +776,17 @@ private struct PlayerStatsPanel: View {
     @State private var phase: StatsPhase = .preseason
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
+    private var phases: [StatsPhase] {
+        snapshot.availablePhases.isEmpty ? [snapshot.defaultPhase] : snapshot.availablePhases
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            StatsPhasePicker(selection: $phase, phases: StatsPhase.allCases)
+            StatsPanelHeader(
+                title: "Player Stats",
+                selection: $phase,
+                phases: phases
+            )
 
             if viewModel.loadingPlayerPhases.contains(phase) {
                 ProgressView("Loading player leaders…")
@@ -676,7 +845,9 @@ private struct PlayerStatsPanel: View {
             }
         }
         .onAppear {
-            phase = snapshot.defaultPhase
+            phase = phases.contains(snapshot.defaultPhase)
+                ? snapshot.defaultPhase
+                : (phases.first ?? .regular)
             Task { await viewModel.loadPlayers(for: phase) }
         }
         .onChange(of: phase) { _, newPhase in
@@ -857,9 +1028,18 @@ private struct GoalDifferentialPanel: View {
     @Binding var selectedTeamCode: String?
     @State private var phase: StatsPhase = .preseason
 
+    private var phases: [StatsPhase] {
+        snapshot.availablePhases.isEmpty ? [snapshot.defaultPhase] : snapshot.availablePhases
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            StatsPhasePicker(selection: $phase, phases: StatsPhase.allCases)
+            StatsPanelHeader(
+                title: "Goal Differential",
+                selection: $phase,
+                phases: phases
+            )
+
             if let table = snapshot.goalDifferentialHistory(for: phase) {
                 HistoryStatsPanel(
                     title: "Goal Differential",
@@ -876,7 +1056,11 @@ private struct GoalDifferentialPanel: View {
                 )
             }
         }
-        .onAppear { phase = snapshot.defaultPhase }
+        .onAppear {
+            phase = phases.contains(snapshot.defaultPhase)
+                ? snapshot.defaultPhase
+                : (phases.first ?? .regular)
+        }
     }
 }
 
@@ -889,7 +1073,7 @@ private struct HistoryStatsPanel: View {
 
     private let rowHeight: CGFloat = 38
     private let teamWidth: CGFloat = 112
-    private let dateWidth: CGFloat = 60
+    private let dateWidth: CGFloat = 64
 
     private var visibleTeams: [StatsTeam] {
         teams
@@ -897,126 +1081,99 @@ private struct HistoryStatsPanel: View {
             .sorted { $0.name < $1.name }
     }
 
-    private var activeTeam: StatsTeam? {
-        if let selectedTeamCode,
-           let selected = visibleTeams.first(where: { $0.code == selectedTeamCode }) {
-            return selected
-        }
-        return visibleTeams.first
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let activeTeam,
-               let values = table.rows[activeTeam.code] {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        StatsTeamLogo(team: activeTeam, size: 28)
-                        Text("\(activeTeam.name) — \(title)")
-                            .font(.headline)
-                    }
+            allTeamsChart
+            historyTable
+        }
+    }
 
-                    Chart {
-                        ForEach(Array(values.enumerated()), id: \.offset) { item in
-                            if let value = item.element {
-                                LineMark(
-                                    x: .value("Date", table.columns[item.offset]),
-                                    y: .value(title, value)
+    private var allTeamsChart: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let selectedTeamCode,
+               let selected = visibleTeams.first(where: { $0.code == selectedTeamCode }) {
+                HStack(spacing: 8) {
+                    StatsTeamLogo(team: selected, size: 26)
+                    Text("\(selected.name) — \(title)")
+                        .font(.headline)
+                }
+            } else {
+                Text("All Teams — \(title)")
+                    .font(.headline)
+            }
+
+            Chart {
+                ForEach(visibleTeams) { team in
+                    let values = table.rows[team.code] ?? []
+                    ForEach(Array(values.enumerated()), id: \.offset) { item in
+                        if let value = item.element {
+                            LineMark(
+                                x: .value(
+                                    "Date",
+                                    displayHistoryDate(table.columns[item.offset])
+                                ),
+                                y: .value(title, value)
+                            )
+                            .foregroundStyle(by: .value("Team", team.code))
+                            .lineStyle(
+                                StrokeStyle(
+                                    lineWidth: lineWidth(for: team),
+                                    lineCap: .round,
+                                    lineJoin: .round
                                 )
+                            )
+                            .opacity(lineOpacity(for: team))
+
+                            if selectedTeamCode == team.code {
                                 PointMark(
-                                    x: .value("Date", table.columns[item.offset]),
+                                    x: .value(
+                                        "Date",
+                                        displayHistoryDate(table.columns[item.offset])
+                                    ),
                                     y: .value(title, value)
                                 )
-                                .symbolSize(12)
+                                .foregroundStyle(by: .value("Team", team.code))
+                                .symbolSize(18)
                             }
                         }
                     }
-                    .chartXAxis {
-                        AxisMarks(values: .automatic(desiredCount: 6)) {
-                            AxisGridLine().foregroundStyle(.quaternary)
-                            AxisValueLabel()
-                        }
-                    }
-                    .chartYAxis {
-                        AxisMarks {
-                            AxisGridLine().foregroundStyle(.quaternary)
-                            AxisValueLabel()
-                        }
-                    }
-                    .frame(height: 180)
                 }
-                .padding(12)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
-
-            historyTable
-        }
-        .onAppear {
-            if selectedTeamCode == nil {
-                selectedTeamCode = visibleTeams.first?.code
+            .chartForegroundStyleScale(
+                domain: visibleTeams.map(\.code),
+                range: visibleTeams.map { Color(hex: $0.colorHex) }
+            )
+            .chartLegend(.hidden)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 6)) {
+                    AxisGridLine().foregroundStyle(.quaternary)
+                    AxisValueLabel()
+                }
             }
+            .chartYAxis {
+                AxisMarks {
+                    AxisGridLine().foregroundStyle(.quaternary)
+                    AxisValueLabel()
+                }
+            }
+            .frame(height: 220)
         }
+        .padding(12)
+        .background(
+            .thinMaterial,
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
     }
 
     private var historyTable: some View {
         ScrollView(.vertical) {
             HStack(alignment: .top, spacing: 0) {
-                VStack(spacing: 0) {
-                    Text("Team")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-                        .frame(width: teamWidth, height: rowHeight)
-                        .background(Color.primary.opacity(0.055))
-
-                    ForEach(visibleTeams) { team in
-                        Button {
-                            selectedTeamCode = team.code
-                        } label: {
-                            HStack(spacing: 6) {
-                                StatsTeamLogo(team: team, size: 22)
-                                Text(team.code)
-                                    .font(.subheadline.weight(.semibold))
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 8)
-                            .frame(width: teamWidth, height: rowHeight)
-                            .background(
-                                selectedTeamCode == team.code
-                                    ? Color.accentColor.opacity(0.12)
-                                    : Color.primary.opacity(0.025)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+                fixedTeamColumn
 
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: 0) {
                         ForEach(table.columns.indices, id: \.self) { index in
-                            let bounds = columnBounds(index)
-                            VStack(spacing: 0) {
-                                Text(displayHistoryDate(table.columns[index]))
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: dateWidth, height: rowHeight)
-                                    .background(Color.primary.opacity(0.055))
-                                    .overlay(alignment: .leading) { Divider() }
-
-                                ForEach(visibleTeams) { team in
-                                    let value = table.value(teamCode: team.code, columnIndex: index)
-                                    Text(formatHistoryValue(value))
-                                        .font(.system(.caption2, design: .monospaced).weight(.medium))
-                                        .frame(width: dateWidth, height: rowHeight)
-                                        .background(
-                                            historyHeatColor(
-                                                value: value,
-                                                low: bounds.low,
-                                                high: bounds.high
-                                            )
-                                        )
-                                        .overlay(alignment: .leading) { Divider() }
-                                }
-                            }
+                            historyDateColumn(index)
                         }
                     }
                 }
@@ -1027,6 +1184,106 @@ private struct HistoryStatsPanel: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(.quaternary, lineWidth: 1)
         }
+    }
+
+    private var fixedTeamColumn: some View {
+        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            Section {
+                ForEach(visibleTeams) { team in
+                    Button {
+                        selectedTeamCode = selectedTeamCode == team.code
+                            ? nil
+                            : team.code
+                    } label: {
+                        HStack(spacing: 6) {
+                            StatsTeamLogo(team: team, size: 22)
+                            Text(team.code)
+                                .font(.subheadline.weight(.semibold))
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(width: teamWidth, height: rowHeight)
+                        .background(
+                            selectedTeamCode == team.code
+                                ? Color(hex: team.colorHex).opacity(0.16)
+                                : Color.primary.opacity(0.025)
+                        )
+                        .overlay(alignment: .bottom) {
+                            tableHorizontalHairline
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            } header: {
+                Text("Team")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                    .frame(width: teamWidth, height: rowHeight)
+                    .background(Color.primary.opacity(0.055))
+                    .background(.background)
+                    .overlay(alignment: .bottom) {
+                        tableHorizontalHairline
+                    }
+                    .zIndex(2)
+            }
+        }
+        .background(.background)
+        .zIndex(3)
+    }
+
+    private func historyDateColumn(_ index: Int) -> some View {
+        let bounds = columnBounds(index)
+
+        return LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            Section {
+                ForEach(visibleTeams) { team in
+                    let value = table.value(
+                        teamCode: team.code,
+                        columnIndex: index
+                    )
+                    Text(formatHistoryValue(value))
+                        .font(.system(.caption2, design: .monospaced).weight(.medium))
+                        .frame(width: dateWidth, height: rowHeight)
+                        .background(
+                            historyHeatColor(
+                                value: value,
+                                low: bounds.low,
+                                high: bounds.high
+                            )
+                        )
+                        .overlay(alignment: .leading) {
+                            tableVerticalHairline
+                        }
+                        .overlay(alignment: .bottom) {
+                            tableHorizontalHairline
+                        }
+                }
+            } header: {
+                Text(displayHistoryDate(table.columns[index]))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: dateWidth, height: rowHeight)
+                    .background(Color.primary.opacity(0.055))
+                    .background(.background)
+                    .overlay(alignment: .leading) {
+                        tableVerticalHairline
+                    }
+                    .overlay(alignment: .bottom) {
+                        tableHorizontalHairline
+                    }
+                    .zIndex(2)
+            }
+        }
+    }
+
+    private func lineWidth(for team: StatsTeam) -> CGFloat {
+        guard let selectedTeamCode else { return 1.6 }
+        return selectedTeamCode == team.code ? 3.6 : 1.0
+    }
+
+    private func lineOpacity(for team: StatsTeam) -> Double {
+        guard let selectedTeamCode else { return 0.88 }
+        return selectedTeamCode == team.code ? 1.0 : 0.22
     }
 
     private func columnBounds(_ index: Int) -> (low: Double, high: Double) {
@@ -1100,9 +1357,33 @@ private func displayHistoryDate(_ raw: String) -> String {
           let day = Int(pieces[1]) else {
         return raw
     }
-    let symbols = Calendar(identifier: .gregorian).shortMonthSymbols
-    guard (1...12).contains(month) else { return raw }
-    return "\(day) \(symbols[month - 1])"
+
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.locale = Locale(identifier: "en_GB")
+    guard let date = calendar.date(
+        from: DateComponents(year: 2000, month: month, day: day)
+    ) else {
+        return raw
+    }
+
+    return date.formatted(
+        .dateTime
+            .day()
+            .month(.abbreviated)
+            .locale(Locale(identifier: "en_GB"))
+    )
+}
+
+private var tableVerticalHairline: some View {
+    Rectangle()
+        .fill(.quaternary)
+        .frame(width: 1)
+}
+
+private var tableHorizontalHairline: some View {
+    Rectangle()
+        .fill(.quaternary)
+        .frame(height: 1)
 }
 
 #Preview {
