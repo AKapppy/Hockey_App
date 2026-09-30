@@ -2,6 +2,15 @@ import SwiftUI
 
 struct ScoreboardCardView: View {
     let game: HockeyGame
+    let prediction: MoneyPuckGamePrediction?
+
+    init(
+        game: HockeyGame,
+        prediction: MoneyPuckGamePrediction? = nil
+    ) {
+        self.game = game
+        self.prediction = prediction
+    }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -10,7 +19,10 @@ struct ScoreboardCardView: View {
             TeamScoreRow(
                 team: game.awayTeam,
                 score: game.awayScore,
-                showScore: showsScore
+                showScore: showsScore,
+                winProbability: scheduledProbability(
+                    prediction?.awayWinProbability
+                )
             )
 
             HStack(spacing: 10) {
@@ -18,8 +30,8 @@ struct ScoreboardCardView: View {
                     .fill(.quaternary)
                     .frame(height: 1)
 
-                Text("at")
-                    .font(.caption)
+                Text("@")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
 
                 Rectangle()
@@ -30,7 +42,10 @@ struct ScoreboardCardView: View {
             TeamScoreRow(
                 team: game.homeTeam,
                 score: game.homeScore,
-                showScore: showsScore
+                showScore: showsScore,
+                winProbability: scheduledProbability(
+                    prediction?.homeWinProbability
+                )
             )
 
             if let venue = game.venue,
@@ -61,26 +76,14 @@ struct ScoreboardCardView: View {
     }
 
     private var cardHeader: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(primaryStatusText)
-                    .font(.title3.weight(.bold))
-                    .monospacedDigit()
-
-                if let secondaryStatusText {
-                    Text(secondaryStatusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
+        HStack {
             Spacer()
 
             Text(statusBadgeText)
-                .font(.caption2.weight(.bold))
-                .textCase(.uppercase)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
+                .font(.caption.weight(.bold))
+                .monospacedDigit()
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
                 .background(.quaternary, in: Capsule())
         }
     }
@@ -89,49 +92,80 @@ struct ScoreboardCardView: View {
         game.status == .live || game.status == .final
     }
 
-    private var primaryStatusText: String {
-        switch game.status {
-        case .scheduled:
-            game.startTime.formatted(date: .omitted, time: .shortened)
-        case .live:
-            "Live"
-        case .final:
-            "Final"
-        case .postponed:
-            "Postponed"
-        case .unknown:
-            game.startTime.formatted(date: .omitted, time: .shortened)
-        }
-    }
-
-    private var secondaryStatusText: String? {
-        switch game.status {
-        case .scheduled:
-            return "Scheduled"
-        case .live:
-            return "Game in progress"
-        case .final:
-            return nil
-        case .postponed:
-            return "Start time subject to change"
-        case .unknown:
-            return "Status unavailable"
-        }
-    }
-
     private var statusBadgeText: String {
         switch game.status {
         case .scheduled:
-            "Upcoming"
+            game.startTime.formatted(date: .omitted, time: .shortened)
         case .live:
-            "Live"
+            liveBadgeText
         case .final:
-            "Final"
+            "FINAL"
         case .postponed:
             "PPD"
         case .unknown:
-            "Game"
+            game.startTime.formatted(date: .omitted, time: .shortened)
         }
+    }
+
+    private var liveBadgeText: String {
+        if game.isIntermission == true {
+            if let periodLabel {
+                return "\(periodLabel) Int"
+            }
+            return "Int"
+        }
+
+        let clock = game.timeRemaining?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let periodLabel,
+           let clock,
+           !clock.isEmpty {
+            return "\(periodLabel) · \(clock)"
+        }
+
+        if let periodLabel {
+            return periodLabel
+        }
+
+        if let clock, !clock.isEmpty {
+            return clock
+        }
+
+        return "LIVE"
+    }
+
+    private var periodLabel: String? {
+        let type = game.periodType?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+
+        if type == "OT" {
+            return "OT"
+        }
+        if type == "SO" {
+            return "SO"
+        }
+
+        guard let period = game.periodNumber, period > 0 else {
+            return nil
+        }
+
+        switch period {
+        case 1:
+            return "1st"
+        case 2:
+            return "2nd"
+        case 3:
+            return "3rd"
+        default:
+            return "\(period)th"
+        }
+    }
+
+    private func scheduledProbability(_ value: Double?) -> Double? {
+        guard game.status == .scheduled else { return nil }
+        return value
     }
 }
 
@@ -139,6 +173,7 @@ private struct TeamScoreRow: View {
     let team: Team
     let score: Int?
     let showScore: Bool
+    let winProbability: Double?
 
     var body: some View {
         HStack(spacing: 13) {
@@ -160,13 +195,20 @@ private struct TeamScoreRow: View {
                 Text(score.map(String.init) ?? "–")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
                     .monospacedDigit()
+            } else if let winProbability {
+                Text(winProbability, format: .percent.precision(.fractionLength(1)))
+                    .font(.headline.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("MoneyPuck win probability")
             }
         }
     }
 }
 
-private struct TeamLogoView: View {
+struct TeamLogoView: View {
     let team: Team
+    var size: CGFloat = 48
 
     var body: some View {
         AsyncImage(url: team.logoURL) { phase in
@@ -184,7 +226,7 @@ private struct TeamLogoView: View {
                 fallback
             }
         }
-        .frame(width: 48, height: 48)
+        .frame(width: size, height: size)
         .accessibilityHidden(true)
     }
 

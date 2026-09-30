@@ -6,6 +6,7 @@ struct ScoreboardView: View {
     @State private var selectedDate = Date()
     @State private var showingCalendar = false
     @State private var selectedInitialDate = false
+    @State private var moneyPuckPredictions: [String: MoneyPuckGamePrediction] = [:]
 
     private let calendar = Calendar.autoupdatingCurrent
     private let columns = [
@@ -49,7 +50,22 @@ struct ScoreboardView: View {
                 } else {
                     LazyVGrid(columns: columns, spacing: 16) {
                         ForEach(gamesForSelectedDate) { game in
-                            ScoreboardCardView(game: game)
+                            if game.status == .final {
+                                NavigationLink {
+                                    GameDetailView(game: game)
+                                } label: {
+                                    ScoreboardCardView(
+                                        game: game,
+                                        prediction: moneyPuckPredictions[game.id]
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                ScoreboardCardView(
+                                    game: game,
+                                    prediction: moneyPuckPredictions[game.id]
+                                )
+                            }
                         }
                     }
                 }
@@ -80,6 +96,9 @@ struct ScoreboardView: View {
         .task {
             await viewModel.loadIfNeeded()
             selectInitialDateIfNeeded()
+        }
+        .task(id: selectedDatePredictionKey) {
+            await loadMoneyPuckPredictions()
         }
         .onChange(of: viewModel.snapshot?.generatedAt) { _, _ in
             selectInitialDateIfNeeded()
@@ -203,6 +222,37 @@ struct ScoreboardView: View {
         ) else { return false }
 
         return availableRange.contains(calendar.startOfDay(for: date))
+    }
+
+    private var selectedDatePredictionKey: String {
+        let parts = calendar.dateComponents(
+            [.year, .month, .day],
+            from: selectedDate
+        )
+        return String(
+            format: "%04d-%02d-%02d",
+            parts.year ?? 0,
+            parts.month ?? 0,
+            parts.day ?? 0
+        )
+    }
+
+    private func loadMoneyPuckPredictions() async {
+        let games = gamesForSelectedDate.filter { $0.status == .scheduled }
+        guard !games.isEmpty else {
+            moneyPuckPredictions = [:]
+            return
+        }
+
+        do {
+            moneyPuckPredictions = try await MoneyPuckPredictionService()
+                .fetchPredictions(
+                    for: selectedDate,
+                    games: games
+                )
+        } catch {
+            moneyPuckPredictions = [:]
+        }
     }
 
     private func selectInitialDateIfNeeded() {

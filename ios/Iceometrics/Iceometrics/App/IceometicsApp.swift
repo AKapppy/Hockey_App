@@ -9,6 +9,7 @@ struct IceometicsApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(homeViewModel: homeViewModel)
+                .background(MacWindowInitialSizeView())
         }
     }
 }

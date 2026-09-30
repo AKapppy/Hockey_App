@@ -70,9 +70,21 @@ nonisolated struct SharedWebGame: Decodable, Sendable {
     let state: String
     let status: String
     let startUtc: String
+    let clock: SharedWebClock?
+    let periodDescriptor: SharedWebPeriodDescriptor?
     let venue: SharedWebVenue?
     let away: SharedWebTeam
     let home: SharedWebTeam
+}
+
+nonisolated struct SharedWebClock: Decodable, Sendable {
+    let timeRemaining: String?
+    let inIntermission: Bool?
+}
+
+nonisolated struct SharedWebPeriodDescriptor: Decodable, Sendable {
+    let number: Int?
+    let periodType: String?
 }
 
 nonisolated struct SharedWebTeam: Decodable, Sendable {
@@ -162,7 +174,11 @@ nonisolated enum SharedWebSnapshotAdapter {
             ),
             awayScore: game.away.score,
             homeScore: game.home.score,
-            venue: game.venue?.name
+            venue: game.venue?.name,
+            periodNumber: game.periodDescriptor?.number,
+            periodType: game.periodDescriptor?.periodType,
+            timeRemaining: game.clock?.timeRemaining,
+            isIntermission: game.clock?.inIntermission
         )
     }
 
