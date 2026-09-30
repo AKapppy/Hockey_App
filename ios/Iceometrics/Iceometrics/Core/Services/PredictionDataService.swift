@@ -73,6 +73,7 @@ private nonisolated struct PredictionExport: Decodable, Sendable {
         let division: String?
         let conference: String?
         let logo: String?
+        let color: String?
         let sortValue: Double?
     }
 
@@ -102,6 +103,7 @@ private nonisolated struct PredictionExport: Decodable, Sendable {
                 logoURL: team.logo.flatMap {
                     URL(string: $0, relativeTo: baseURL)?.absoluteURL
                 },
+                colorHex: team.color ?? "",
                 sortValue: team.sortValue ?? 0
             )
         }
@@ -120,7 +122,8 @@ private nonisolated struct PredictionExport: Decodable, Sendable {
             errorMessage: metadata.predictions?.error,
             metrics: mappedMetrics,
             teams: mappedTeams,
-            tables: mappedTables
+            tables: mappedTables,
+            cupURL: URL(string: "assets/stanley_cup.png", relativeTo: baseURL)?.absoluteURL
         )
     }
 }

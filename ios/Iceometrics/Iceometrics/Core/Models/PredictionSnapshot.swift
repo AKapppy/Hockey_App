@@ -8,6 +8,7 @@ nonisolated struct PredictionSnapshot: Sendable {
     let metrics: [PredictionMetric]
     let teams: [PredictionTeam]
     let tables: [String: PredictionTable]
+    let cupURL: URL?
 
     var hasData: Bool {
         tables.values.contains { !$0.columns.isEmpty && !$0.rows.isEmpty }
@@ -28,6 +29,7 @@ nonisolated struct PredictionTeam: Identifiable, Hashable, Sendable {
     let division: String
     let conference: String
     let logoURL: URL?
+    let colorHex: String
     let sortValue: Double
 
     var id: String { code }

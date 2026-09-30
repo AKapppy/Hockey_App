@@ -59,6 +59,7 @@ struct PredictionsView: View {
     private func predictionContent(_ snapshot: PredictionSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             predictionHeader(snapshot)
+            PredictionPieChartView(snapshot: snapshot)
             metricPicker(snapshot.metrics)
 
             if let table = snapshot.tables[selectedMetricKey] {
@@ -285,9 +286,6 @@ private struct PredictionSpreadsheet: View {
                 )
                 .padding(.horizontal, 10)
                 .background(Color.primary.opacity(0.025))
-                .overlay(alignment: .bottom) {
-                    Divider()
-                }
             }
         }
         .zIndex(1)
@@ -343,9 +341,6 @@ private struct PredictionSpreadsheet: View {
                     : 0.025 + (clamped * (isLatest ? 0.18 : 0.11))
             )
         )
-        .overlay(alignment: .bottom) {
-            Divider()
-        }
         .overlay(alignment: .leading) {
             Divider()
         }

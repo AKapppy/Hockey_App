@@ -13,11 +13,7 @@ struct RootView: View {
             }
 
             NavigationStack {
-                FeaturePlaceholderView(
-                    title: "Stats",
-                    systemImage: "chart.bar.xaxis",
-                    message: "Team, game, and player stats will live here."
-                )
+                StatsView()
             }
             .tabItem {
                 Label("Stats", systemImage: "chart.bar.xaxis")
@@ -30,7 +26,6 @@ struct RootView: View {
                 Label("Predictions", systemImage: "chart.line.uptrend.xyaxis")
             }
 
-
             NavigationStack {
                 FeaturePlaceholderView(
                     title: "Models",
@@ -41,7 +36,6 @@ struct RootView: View {
             .tabItem {
                 Label("Models", systemImage: "function")
             }
-
         }
     }
 }
