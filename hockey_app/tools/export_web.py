@@ -9,6 +9,7 @@ import shutil
 import re
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -86,11 +87,16 @@ METRIC_TITLES: dict[str, str] = {
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; HockeyAppWebExporter/1.0)"}
 URL_SIMULATIONS = "https://moneypuck.com/moneypuck/simulations/"
 DATA_SCRIPT_RE = re.compile(r'<script\s+src="data\.js(?:\?v=[^"]*)?"></script>')
+HOCKEY_TIMEZONE = ZoneInfo("America/New_York")
+
+
+def _hockey_today() -> dt.date:
+    return dt.datetime.now(HOCKEY_TIMEZONE).date()
 
 
 def _default_season(today: dt.date | None = None) -> str:
     from hockey_app.domain.seasons import resolve_season
-    return resolve_season(today).season
+    return resolve_season(today or _hockey_today()).season
 
 
 def _season_start(season: str) -> dt.date:
@@ -956,7 +962,14 @@ def build_payload(
 ) -> dict[str, Any]:
     prediction_error = None
     try:
-        tables = compile_probability_tables(simulations_dir, start, end, metrics=METRICS, canon_team_code=canon_team_code)
+        tables = compile_probability_tables(
+    	simulations_dir,
+    	start,
+    	end,
+    	metrics=METRICS,
+    	canon_team_code=canon_team_code,
+    	forward_fill=False,
+    )
     except Exception as exc:
         tables = {}
         prediction_error = str(exc)
@@ -1083,62 +1096,127 @@ def export_web(
     refresh: bool,
 ) -> Path:
     simulations_dir = sims_dir(season)
+    hockey_today = _hockey_today()
     errors = []
+
     if refresh:
         refresh_start = start or _season_start(season)
-        refresh_end = end or dt.date.today()
+        refresh_end = end or hockey_today
+
         try:
-            errors = download_missing_simulations(refresh_start, refresh_end, simulations_dir,
-                headers=HEADERS, ensure_dir_writable=_ensure_writable, index_url=URL_SIMULATIONS)
+            errors = download_missing_simulations(
+                refresh_start,
+                refresh_end,
+                simulations_dir,
+                headers=HEADERS,
+                ensure_dir_writable=_ensure_writable,
+                index_url=URL_SIMULATIONS,
+            )
         except Exception as exc:
             errors = [str(exc)]
+
         if errors:
             print("MoneyPuck provider warning: " + "; ".join(errors))
+
         _refresh_desktop_xml_data(
             season=season,
             start=_season_start(season),
             end=refresh_end,
         )
 
-    dates = _csv_dates(simulations_dir)
-    export_start = start or (dates[0] if dates else _season_start(season))
-    export_end = end or (dates[-1] if dates else max(export_start, dt.date.today()))
+    # Only consider simulation files through the current Eastern hockey date.
+    # A GitHub runner crossing midnight UTC must not create tomorrow's column.
+    dates = [
+        day
+        for day in _csv_dates(simulations_dir)
+        if day <= hockey_today
+    ]
+
+    export_start = start or (
+        dates[0] if dates else _season_start(season)
+    )
+
+    # Include today's hockey date even if MoneyPuck has not published a CSV.
+    # build_payload() uses forward_fill=False, so missing cells stay blank.
+    export_end = end or hockey_today
+
+    if export_end < export_start:
+        export_end = export_start
+
     payload = build_payload(
         season=season,
         start=export_start,
         end=export_end,
         simulations_dir=simulations_dir,
     )
+
     if errors:
-        payload["metadata"]["predictions"]["status"] = "stale" if payload.get("teams") else "unavailable"
+        payload["metadata"]["predictions"]["status"] = (
+            "stale" if payload.get("teams") else "unavailable"
+        )
         payload["metadata"]["predictions"]["error"] = "; ".join(errors)
+
     existing = _read_existing_payload(out_dir)
-    if existing and existing.get("metadata", {}).get("season") == season and not _has_desktop_data(payload) and _has_desktop_data(existing):
+
+    if (
+        existing
+        and existing.get("metadata", {}).get("season") == season
+        and not _has_desktop_data(payload)
+        and _has_desktop_data(existing)
+    ):
         payload["desktop"] = existing["desktop"]
         payload["metadata"]["scheduleStatus"] = "stale"
-        payload["metadata"]["scheduleGeneratedAt"] = existing.get("metadata", {}).get("generatedAt")
-    else:
-        if existing and existing.get("metadata", {}).get("season") == season:
-            _preserve_existing_external_web_games(payload, existing)
+        payload["metadata"]["scheduleGeneratedAt"] = (
+            existing.get("metadata", {}).get("generatedAt")
+        )
+    elif existing and existing.get("metadata", {}).get("season") == season:
+        _preserve_existing_external_web_games(payload, existing)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     archive_payloads = [payload]
+
     if existing and existing.get("metadata", {}).get("season") != season:
         archive_payloads.append(existing)
+
     seasons = _write_season_archives(out_dir, archive_payloads)
     payload["metadata"]["availableSeasons"] = seasons
 
     from hockey_app.tools.validate_web import validate
+
     print(json.dumps(validate(payload), ensure_ascii=False))
     _copy_logo_assets(out_dir)
-    data_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    (out_dir / "data.json").write_text(data_json + "\n", encoding="utf-8")
-    initial = {**payload, "tables": {}, "desktop": {"league": "NHL", "scoreboard": payload.get("desktop", {}).get("scoreboard", {})}, "detailsUrl": "data.json"}
-    (out_dir / "data.js").write_text(
-        "window.HOCKEY_APP_DATA = " + json.dumps(initial, ensure_ascii=False, separators=(",", ":")) + ";\n",
+
+    data_json = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    (out_dir / "data.json").write_text(
+        data_json + "\n",
         encoding="utf-8",
     )
-    _write_data_version(out_dir, str(payload.get("metadata", {}).get("generatedAt") or ""))
+
+    initial = {
+        **payload,
+        "tables": {},
+        "desktop": {
+            "league": "NHL",
+            "scoreboard": payload.get("desktop", {}).get("scoreboard", {}),
+        },
+        "detailsUrl": "data.json",
+    }
+    (out_dir / "data.js").write_text(
+        "window.HOCKEY_APP_DATA = "
+        + json.dumps(initial, ensure_ascii=False, separators=(",", ":"))
+        + ";\n",
+        encoding="utf-8",
+    )
+
+    _write_data_version(
+        out_dir,
+        str(payload.get("metadata", {}).get("generatedAt") or ""),
+    )
     return out_dir / "data.js"
 
 
