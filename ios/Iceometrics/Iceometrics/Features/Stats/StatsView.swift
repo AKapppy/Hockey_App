@@ -774,7 +774,8 @@ private struct PlayerLeaderCard: View {
                 .font(.title3.bold())
         }
         .padding(10)
-        .frame(width: 132, minHeight: 150)
+        .frame(width: 132)
+        .frame(minHeight: 150)
         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }

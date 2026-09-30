@@ -397,6 +397,7 @@ private struct PredictionTeamLogo: View {
         }
         .frame(width: 28, height: 28)
     }
+    
 }
 
 #Preview {
